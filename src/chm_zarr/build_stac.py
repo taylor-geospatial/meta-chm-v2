@@ -20,9 +20,10 @@ from pystac.extensions.raster import DataType, RasterBand, RasterExtension
 from shapely.geometry import mapping
 from tqdm import tqdm
 
-from . import DST_BASE, SRC_COG_PREFIX
+from . import DST_HTTPS_BASE, SRC_COG_PREFIX
 
-DST_STAC_BASE = f"{DST_BASE}/stac"
+# Catalog navigation links use the public HTTPS endpoint so HTTP clients can traverse.
+DST_STAC_BASE = f"{DST_HTTPS_BASE}/stac"
 DST_COLLECTION_URL = f"{DST_STAC_BASE}/collection.json"
 DST_ITEMS_PQ_URL = f"{DST_STAC_BASE}/items.parquet"
 

@@ -49,11 +49,49 @@ WHERE bbox_3857.minx < 1000000 AND bbox_3857.maxx > 0;  -- AOI filter
 
 ### STAC
 
+This is a **static** STAC catalog: a `collection.json` plus a stac-geoparquet
+`items.parquet` (213,109 Items). There is **no STAC API server**, so there are three
+access patterns depending on your tool.
+
+**1. Read the collection metadata (`pystac`):**
+
 ```python
 import pystac
 c = pystac.Collection.from_file(
     "https://data.source.coop/tge-labs/meta-chm-v2/stac/collection.json"
 )
+```
+
+**2. Query the Items by space/time (stac-geoparquet — the scalable path):**
+
+```python
+# rustac gives a pystac-client-like search straight over the parquet, no server:
+from rustac import DuckdbClient
+client = DuckdbClient()
+items = client.search(
+    "https://data.source.coop/tge-labs/meta-chm-v2/stac/items.parquet",
+    bbox=[-122.6, 37.6, -122.3, 37.9],
+)
+```
+
+Or with DuckDB directly:
+
+```sql
+INSTALL spatial; LOAD spatial;
+SELECT id, assets FROM read_parquet(
+  'https://data.source.coop/tge-labs/meta-chm-v2/stac/items.parquet'
+) WHERE bbox.xmin < -122.3 AND bbox.xmax > -122.6;
+```
+
+**3. `pystac-client` (requires a STAC API).** `pystac_client.Client.open()` needs a STAC
+API endpoint, which a static catalog does not provide. To use it, serve `items.parquet`
+behind [`stac-fastapi-geoparquet`](https://github.com/stac-utils/stac-fastapi-geoparquet)
+(no database needed), then:
+
+```python
+from pystac_client import Client
+client = Client.open("https://your-stac-fastapi-geoparquet-host/")
+search = client.search(collections=["dinov3-global-chm-v2-ml3"], bbox=[...])
 ```
 
 ### Virtual GeoZarr (xarray + Icechunk)

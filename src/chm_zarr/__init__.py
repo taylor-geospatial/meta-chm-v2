@@ -9,3 +9,6 @@ SRC_META_PREFIX = f"s3://{SRC_BUCKET}/{SRC_PREFIX}/metadata"
 DST_BUCKET = "us-west-2.opendata.source.coop"
 DST_PREFIX = "tge-labs/meta-chm-v2"
 DST_BASE = f"s3://{DST_BUCKET}/{DST_PREFIX}"
+# Public HTTPS endpoint (source.coop CDN) — use for STAC catalog navigation links so
+# plain HTTP clients (pystac, browsers) can traverse the static catalog.
+DST_HTTPS_BASE = f"https://data.source.coop/{DST_PREFIX}"

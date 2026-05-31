@@ -6,8 +6,13 @@
 
 import maplibregl from "https://esm.sh/maplibre-gl@4.7.1";
 import * as duckdb from "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/+esm";
+import { cogProtocol } from "https://esm.sh/@geomatico/maplibre-cog-protocol@0.9.0";
 
 const ITEMS_URL = "https://data.source.coop/tge-labs/meta-chm-v2/stac/items.parquet";
+// Downsampled global canopy overview (~611 m/px, web z8), single-band uint8, EPSG:3857, nodata=0.
+// Streamed + colorized client-side from source.coop (CORS-enabled). 1m..40m green ramp.
+const OVERVIEW_URL = "https://data.source.coop/tge-labs/meta-chm-v2/overview/chm_overview_z8.tif";
+const CANOPY_SRC = `cog://${OVERVIEW_URL}#color:BrewerYlGn9,1,40,c`;
 const S3_PREFIX = "s3://dataforgood-fb-data/";
 const HTTPS_PREFIX = "https://dataforgood-fb-data.s3.amazonaws.com/";
 const MAX_TILES = 2000;
@@ -37,8 +42,19 @@ const map = new maplibregl.Map({
 });
 map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
 map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-right");
+maplibregl.addProtocol("cog", cogProtocol);
 
 map.on("load", () => {
+  // Global canopy-height overview (client-side COG read + colorize). Drawn under the
+  // tile footprints so the filter/download layer stays on top.
+  map.addSource("canopy", { type: "raster", url: CANOPY_SRC, tileSize: 256 });
+  map.addLayer({
+    id: "canopy",
+    type: "raster",
+    source: "canopy",
+    paint: { "raster-opacity": 0.85, "raster-resampling": "nearest" },
+  });
+
   map.addSource("tiles", { type: "geojson", data: emptyFC() });
   map.addLayer({
     id: "tiles-fill",
@@ -239,6 +255,13 @@ function toast(msg) {
 }
 
 $("search").onclick = search;
+
+// canopy overlay controls
+const setCanopy = (k, v) => map.getLayer("canopy") && map.setPaintProperty("canopy", k, v);
+$("canopy-toggle").onchange = (e) => setCanopy("raster-opacity", e.target.checked ? $("canopy-opacity").value / 100 : 0);
+$("canopy-opacity").oninput = (e) => {
+  if ($("canopy-toggle").checked) setCanopy("raster-opacity", e.target.value / 100);
+};
 
 initDB()
   .then(() => {

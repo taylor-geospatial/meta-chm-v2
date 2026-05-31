@@ -30,11 +30,23 @@
         </p>
       </header>
 
+      <div class="layer-ctl">
+        <label class="switch">
+          <input type="checkbox" id="canopy-toggle" checked />
+          <span>Canopy height overlay</span>
+        </label>
+        <input type="range" id="canopy-opacity" min="0" max="100" value="85" aria-label="overlay opacity" />
+        <div class="legend">
+          <span class="ramp"></span>
+          <div class="ticks mono"><span>0</span><span>20</span><span>40 m</span></div>
+        </div>
+      </div>
+
       <div class="controls">
         <button id="search" disabled>
           <span class="dot"></span><span id="search-label">starting engine…</span>
         </button>
-        <p class="hint" id="hint">Pan/zoom to an area, then search the view.</p>
+        <p class="hint" id="hint">Pan/zoom to an area, then search the view to list + download tiles.</p>
       </div>
 
       <div id="summary" class="summary" hidden></div>

@@ -85,8 +85,78 @@ h1 {
   font-size: 12px;
 }
 
+.layer-ctl {
+  margin-top: 16px;
+  padding: 12px 13px;
+  border-radius: 10px;
+  background: var(--row);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+.switch {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+.switch input {
+  appearance: none;
+  width: 34px;
+  height: 18px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.14);
+  position: relative;
+  cursor: pointer;
+  transition: background 0.2s;
+  flex: none;
+}
+.switch input::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #cdd8ce;
+  transition: transform 0.2s;
+}
+.switch input:checked {
+  background: var(--accent);
+}
+.switch input:checked::after {
+  transform: translateX(16px);
+  background: #06210f;
+}
+#canopy-opacity {
+  width: 100%;
+  margin: 12px 0 10px;
+  accent-color: var(--accent);
+}
+.legend .ramp {
+  display: block;
+  height: 9px;
+  border-radius: 5px;
+  background: linear-gradient(
+    90deg,
+    #ffffe5,
+    #d9f0a3,
+    #78c679,
+    #238443,
+    #004529
+  );
+}
+.legend .ticks {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--muted);
+}
+
 .controls {
-  margin-top: 18px;
+  margin-top: 16px;
 }
 #search {
   width: 100%;

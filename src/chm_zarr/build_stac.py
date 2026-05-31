@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import geopandas as gpd
+import pyarrow.parquet as pq
 import pystac
 import stac_geoparquet
 from pystac.extensions.projection import ProjectionExtension
@@ -26,6 +27,10 @@ from . import DST_HTTPS_BASE, SRC_COG_PREFIX
 DST_STAC_BASE = f"{DST_HTTPS_BASE}/stac"
 DST_COLLECTION_URL = f"{DST_STAC_BASE}/collection.json"
 DST_ITEMS_PQ_URL = f"{DST_STAC_BASE}/items.parquet"
+
+# Rows per parquet row group. Small enough that bbox-filtered reads prune most groups,
+# large enough to keep per-group overhead low. 213k items / 4000 ≈ 53 groups.
+ROW_GROUP_SIZE = 4000
 
 COLLECTION_ID = "dinov3-global-chm-v2-ml3"
 COLLECTION_TITLE = "Meta CHM v2 (DINOv3 global, ml3) — cloud-native companion"
@@ -178,11 +183,20 @@ def build(tiles_parquet: Path, out_dir: Path, sample_json: int = 200) -> None:
 
     items_pq = out_dir / "items.parquet"
     print(f"writing stac-geoparquet {items_pq}")
-    rb = stac_geoparquet.arrow.parse_stac_items_to_arrow(item_dicts)
+    # Items are quadkey-sorted (Bing quadkeys = Z-order curve → spatial locality). Write
+    # many small row groups so each carries tight bbox min/max stats; a bbox query then
+    # range-reads only the matching groups (cloud-native streaming) instead of the whole
+    # file. to_parquet writes one row group per input batch, so rebatch to ROW_GROUP rows.
+    table = stac_geoparquet.arrow.parse_stac_items_to_arrow(item_dicts).read_all()
+    reader = table.to_reader(max_chunksize=ROW_GROUP_SIZE)
     stac_geoparquet.arrow.to_parquet(
-        rb,
+        reader,
         items_pq,
         compression="zstd",
         compression_level=13,
     )
-    print(f"done — {len(item_dicts):,} items, {written_json} sample JSONs in {sample_dir}/")
+    n_groups = pq.ParquetFile(items_pq).metadata.num_row_groups
+    print(
+        f"done — {len(item_dicts):,} items in {n_groups} row groups, "
+        f"{written_json} sample JSONs in {sample_dir}/"
+    )

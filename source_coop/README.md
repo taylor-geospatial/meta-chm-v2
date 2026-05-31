@@ -47,13 +47,20 @@ FROM 's3://us-west-2.opendata.source.coop/tge-labs/meta-chm-v2/tiles.parquet'
 WHERE bbox_3857.minx < 1000000 AND bbox_3857.maxx > 0;  -- AOI filter
 ```
 
-### STAC
+### STAC — serverless, cloud-native search
 
 This is a **static** STAC catalog: a `collection.json` plus a stac-geoparquet
-`items.parquet` (213,109 Items). There is **no STAC API server**, so there are three
-access patterns depending on your tool.
+`items.parquet` (213,109 Items). **No STAC API server is required.** The parquet is
+written in 54 quadkey-sorted (Z-order) row groups with per-group bbox statistics, so a
+spatial query reads only the matching byte ranges over HTTP — e.g. a city-scale bbox
+touches ~3 of 54 row groups, skipping ~94% of the file. Point any of these tools straight
+at the public URL:
 
-**1. Read the collection metadata (`pystac`):**
+```
+https://data.source.coop/tge-labs/meta-chm-v2/stac/items.parquet
+```
+
+**Collection metadata (`pystac`):**
 
 ```python
 import pystac
@@ -62,37 +69,51 @@ c = pystac.Collection.from_file(
 )
 ```
 
-**2. Query the Items by space/time (stac-geoparquet — the scalable path):**
+**Search the Items — pick your tool, all stream + prune row groups:**
 
 ```python
-# rustac gives a pystac-client-like search straight over the parquet, no server:
+# rustac — a pystac-client-like search, in-process, no server
 from rustac import DuckdbClient
-client = DuckdbClient()
-items = client.search(
-    "https://data.source.coop/tge-labs/meta-chm-v2/stac/items.parquet",
-    bbox=[-122.6, 37.6, -122.3, 37.9],
+items = DuckdbClient().search(ITEMS_URL, bbox=[13.0, 52.0, 13.4, 52.3], max_items=100)
+```
+
+```sql
+-- DuckDB (httpfs range reads + row-group pruning)
+INSTALL spatial; LOAD spatial;
+SELECT id, assets FROM read_parquet('https://data.source.coop/tge-labs/meta-chm-v2/stac/items.parquet')
+WHERE bbox.xmin <= 13.4 AND bbox.xmax >= 13.0 AND bbox.ymin <= 52.3 AND bbox.ymax >= 52.0;
+```
+
+```python
+# pyarrow.dataset — predicate pushdown over the remote file
+import pyarrow.dataset as ds, pyarrow.compute as pc
+t = ds.dataset(ITEMS_URL, format="parquet").to_table(
+    filter=(pc.field("bbox", "xmin") <= 13.4) & (pc.field("bbox", "xmax") >= 13.0)
 )
 ```
 
-Or with DuckDB directly:
+Also works: **geopandas** `read_parquet(..., bbox=...)`, **Polars** `scan_parquet`, and the
+**stac-geoparquet** library. For teams that specifically need the `pystac-client` API
+(`Client.open(...).search(...)`), serve `items.parquet` behind
+[`stac-fastapi-geoparquet`](https://github.com/stac-utils/stac-fastapi-geoparquet) — no
+database required.
 
-```sql
-INSTALL spatial; LOAD spatial;
-SELECT id, assets FROM read_parquet(
-  'https://data.source.coop/tge-labs/meta-chm-v2/stac/items.parquet'
-) WHERE bbox.xmin < -122.3 AND bbox.xmax > -122.6;
-```
-
-**3. `pystac-client` (requires a STAC API).** `pystac_client.Client.open()` needs a STAC
-API endpoint, which a static catalog does not provide. To use it, serve `items.parquet`
-behind [`stac-fastapi-geoparquet`](https://github.com/stac-utils/stac-fastapi-geoparquet)
-(no database needed), then:
+**Search → xarray (`odc.stac`):** turn found Items into a lazily-loaded, dask-backed
+`xarray` cube reading the COGs directly (EPSG:3857, no reprojection):
 
 ```python
-from pystac_client import Client
-client = Client.open("https://your-stac-fastapi-geoparquet-host/")
-search = client.search(collections=["dinov3-global-chm-v2-ml3"], bbox=[...])
+import os, pystac, odc.stac
+from rustac import DuckdbClient
+
+os.environ.update(AWS_NO_SIGN_REQUEST="YES", AWS_REGION="us-east-1")  # Meta's COGs are anonymous
+bbox = [13.30, 52.45, 13.45, 52.55]
+items = [pystac.Item.from_dict(d) for d in DuckdbClient().search(ITEMS_URL, bbox=bbox)]
+chm = odc.stac.load(items, bands=["chm"], bbox=bbox, resolution=10, chunks={"x": 2048, "y": 2048})
+heights = chm["chm"].isel(time=0).compute()  # canopy height in meters
 ```
+
+See `examples/search_and_read.py` and `examples/odc_stac_load.py` in the
+[chm-zarr](https://github.com/isaaccorley/chm-zarr) repo.
 
 ### Virtual GeoZarr (xarray + Icechunk)
 

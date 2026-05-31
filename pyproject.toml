@@ -51,6 +51,10 @@ dev = [
   "ruff>=0.14.1",
   "ty>=0.0.1a23",
 ]
+examples = [
+  "odc-stac>=0.5.2",
+  "rustac>=0.9.11",
+]
 
 [tool.ruff]
 target-version = "py312"
@@ -105,6 +109,10 @@ lint.ignore = [
   # https://docs.astral.sh/ruff/formatter/#conflicting-lint-rules
   "W191",
 ]
+lint.extend-per-file-ignores."examples/**" = [
+  "ANN001",
+  "ANN201",
+]
 lint.extend-per-file-ignores."scripts/**" = [
   "ANN001",
   "ANN201",
@@ -119,9 +127,9 @@ lint.extend-per-file-ignores."tests/**" = [
 lint.isort.known-first-party = [ "chm_zarr" ]
 
 [tool.ty]
-# Type-check the package; exclude operational helper scripts whose numpy/xarray
+# Type-check the package; exclude operational/example scripts whose numpy/xarray
 # dynamic attributes (e.g. DataArray.values -> ndarray) ty cannot narrow.
-src.exclude = [ "scripts/**", "slurm/**" ]
+src.exclude = [ "scripts/**", "slurm/**", "examples/**" ]
 
 [tool.pytest]
 ini_options.testpaths = [ "tests" ]

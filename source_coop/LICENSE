@@ -1,0 +1,26 @@
+Creative Commons Attribution 4.0 International (CC-BY-4.0)
+
+This dataset is a cloud-native repackaging of Meta's "DINOv3 Global Canopy
+Height Map v2 (ml3)" dataset. The underlying canopy-height data is produced by
+Meta AI / Data for Good and is licensed under CC-BY-4.0.
+
+Original data:
+  Meta Data for Good — Canopy Height Maps
+  s3://dataforgood-fb-data/forests/v2/global/dinov3_global_chm_v2_ml3/
+  https://dataforgood.facebook.com/dfg/tools/canopy-height-maps
+
+This repackaging (GeoParquet tile index, STAC catalog, and VirtualiZarr GeoZarr
+manifest) is produced by Taylor Geospatial Engine Labs and is likewise released
+under CC-BY-4.0. It contains NO copies of the underlying raster pixels — the COG
+assets are referenced in place from Meta's public S3 bucket.
+
+You are free to share and adapt this material for any purpose, provided you give
+appropriate credit to both Meta (Data for Good) and Taylor Geospatial Engine
+Labs, provide a link to the license, and indicate if changes were made.
+
+Full license text: https://creativecommons.org/licenses/by/4.0/legalcode
+
+Cite the underlying method:
+  Tolan et al., "Very high resolution canopy height maps from RGB imagery using
+  self-supervised vision transformer and convolutional decoder trained on Aerial
+  Lidar." (2024) https://arxiv.org/abs/2304.07213

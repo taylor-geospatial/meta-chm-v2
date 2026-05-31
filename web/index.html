@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Meta CHM v2 — Global Canopy Height Tiles</title>
+    <meta
+      name="description"
+      content="Browse and download Meta's global canopy height map v2 (ml3) tiles — a serverless, cloud-native STAC viewer."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link href="https://esm.sh/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+    <link href="./style.css" rel="stylesheet" />
+  </head>
+  <body>
+    <div id="map"></div>
+
+    <aside id="panel">
+      <header>
+        <div class="kicker">Taylor Geospatial Engine · cloud-native</div>
+        <h1>Global Canopy Height</h1>
+        <p class="sub">
+          Meta CHM v2 <span class="mono">(dinov3 · ml3)</span> — 213,109 tiles at ~1.19 m,
+          streamed straight from a STAC GeoParquet. No server.
+        </p>
+      </header>
+
+      <div class="controls">
+        <button id="search" disabled>
+          <span class="dot"></span><span id="search-label">starting engine…</span>
+        </button>
+        <p class="hint" id="hint">Pan/zoom to an area, then search the view.</p>
+      </div>
+
+      <div id="summary" class="summary" hidden></div>
+
+      <div id="bulk" class="bulk" hidden>
+        <button id="copy-urls" class="ghost">Copy URLs</button>
+        <button id="dl-script" class="ghost">Download .sh</button>
+        <button id="dl-geojson" class="ghost">Footprints GeoJSON</button>
+      </div>
+
+      <ol id="results"></ol>
+
+      <footer>
+        <a href="https://data.source.coop/tge-labs/meta-chm-v2/" target="_blank" rel="noopener">data</a>
+        <a href="https://data.source.coop/tge-labs/meta-chm-v2/stac/collection.json" target="_blank" rel="noopener">STAC</a>
+        <a href="https://github.com/taylor-geospatial/meta-chm-v2" target="_blank" rel="noopener">code</a>
+        <span class="mono">CC-BY-4.0 · © Meta / Data for Good</span>
+      </footer>
+    </aside>
+
+    <div id="toast" hidden></div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

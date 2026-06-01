@@ -31,6 +31,8 @@ os.environ.update(
     GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
     VSI_CACHE="TRUE",
     GDAL_HTTP_MULTIPLEX="YES",
+    GDAL_HTTP_MAX_RETRY="5",  # ride out transient S3 read hiccups
+    GDAL_HTTP_RETRY_DELAY="2",
 )
 Z_NATIVE = 10
 

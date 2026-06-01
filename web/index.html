@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Meta CHM v2 — Global Canopy Height Tiles</title>
+    <title>Meta CHM v2 — Canopy Height Analysis</title>
     <meta
       name="description"
-      content="Browse and download Meta's global canopy height map v2 (ml3) tiles — a serverless, cloud-native STAC viewer."
+      content="Interactive global canopy-height analysis — threshold, classify, and measure tree canopy live in the browser, streaming cloud-native tiles."
     />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -23,52 +23,65 @@
     <aside id="panel">
       <header>
         <div class="kicker">Taylor Geospatial Engine · cloud-native</div>
-        <h1>Global Canopy Height</h1>
+        <h1>Canopy Height Analysis</h1>
         <p class="sub">
-          Meta CHM v2 <span class="mono">(dinov3 · ml3)</span> — 213,109 tiles at ~1.19 m,
-          streamed straight from a STAC GeoParquet. No server.
+          Meta CHM v2 <span class="mono">(dinov3 · ml3)</span> — raw height streamed as
+          PMTiles, colorized &amp; measured live on the GPU. No server.
         </p>
       </header>
 
-      <div class="layer-ctl">
-        <label class="switch">
-          <input type="checkbox" id="canopy-toggle" checked />
-          <span>Canopy height overlay</span>
-        </label>
-        <input type="range" id="canopy-opacity" min="0" max="100" value="85" aria-label="overlay opacity" />
-        <div class="legend">
-          <span class="ramp"></span>
-          <div class="ticks mono"><span>0</span><span>20</span><span>40 m</span></div>
+      <section class="ctl">
+        <div class="row">
+          <label>Display</label>
+          <select id="mode">
+            <option value="ramp">Continuous ramp</option>
+            <option value="classes">Height classes</option>
+            <option value="forest">Forest mask (&gt; threshold)</option>
+          </select>
         </div>
-      </div>
 
-      <div class="controls">
-        <button id="search" disabled>
-          <span class="dot"></span><span id="search-label">starting engine…</span>
-        </button>
-        <p class="hint" id="hint">Pan/zoom to an area, then search the view to list + download tiles.</p>
-      </div>
+        <div class="row">
+          <label>Height range <span class="mono" id="range-label">0–50 m</span></label>
+          <div class="dual">
+            <input type="range" id="hmin" min="0" max="60" value="0" />
+            <input type="range" id="hmax" min="0" max="60" value="50" />
+          </div>
+        </div>
 
-      <div id="summary" class="summary" hidden></div>
+        <div class="row" id="forest-row" hidden>
+          <label>Forest threshold <span class="mono" id="forest-label">5 m</span></label>
+          <input type="range" id="forest-thr" min="1" max="40" value="5" />
+        </div>
 
-      <div id="bulk" class="bulk" hidden>
-        <button id="copy-urls" class="ghost">Copy URLs</button>
-        <button id="dl-script" class="ghost">Download .sh</button>
-        <button id="dl-geojson" class="ghost">Footprints GeoJSON</button>
-      </div>
+        <div class="row">
+          <label>Opacity</label>
+          <input type="range" id="opacity" min="0" max="100" value="90" />
+        </div>
 
-      <ol id="results"></ol>
+        <div class="legend"><span class="ramp" id="legend-ramp"></span>
+          <div class="ticks mono"><span>0</span><span id="legend-mid">25</span><span id="legend-max">50 m</span></div>
+        </div>
+      </section>
+
+      <section class="metrics" id="metrics">
+        <div class="metrics-head">
+          <span>Analysis — view</span><span class="mono" id="metrics-z"></span>
+        </div>
+        <div id="metrics-body" class="muted">Zoom in to measure the visible canopy.</div>
+        <canvas id="hist" width="320" height="90" hidden></canvas>
+      </section>
 
       <footer>
-        <a href="https://data.source.coop/tge-labs/meta-chm-v2/" target="_blank" rel="noopener">data</a>
-        <a href="https://data.source.coop/tge-labs/meta-chm-v2/stac/collection.json" target="_blank" rel="noopener">STAC</a>
-        <a href="https://github.com/taylor-geospatial/meta-chm-v2" target="_blank" rel="noopener">code</a>
-        <span class="mono">CC-BY-4.0 · © Meta / Data for Good</span>
+        <button id="export" class="ghost">Download tiles in view</button>
+        <div class="links">
+          <a href="https://data.source.coop/tge-labs/meta-chm-v2/" target="_blank" rel="noopener">data</a>
+          <a href="https://github.com/taylor-geospatial/meta-chm-v2" target="_blank" rel="noopener">code</a>
+          <span class="mono">CC-BY-4.0 · © Meta / Data for Good</span>
+        </div>
       </footer>
     </aside>
 
     <div id="toast" hidden></div>
-
     <script type="module" src="./app.js"></script>
   </body>
 </html>

@@ -35,27 +35,33 @@ const map = new maplibregl.Map({
 map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
 map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-right");
 
+// One PMTiles archive (z0-8 overview + z10-14 detail), used as two raster layers so
+// maplibre overzooms the z8 overview to fill z9 (no gap) and the crisp z10-14 takes over.
+const CHM_LAYERS = ["chm-lo", "chm-hi"];
+const RASTER_PAINT = () => ({
+  "raster-opacity": state.opacity,
+  "raster-resampling": "nearest", // preserve exact height values
+  "raster-color-mix": [255, 0, 0, 0], // height(m) = R channel * 255
+  "raster-color-range": [0, 255],
+  "raster-color": colorExpr(),
+});
+
 map.on("load", () => {
-  map.addSource("chm", {
+  map.addSource("chm-lo", {
     type: "raster",
     url: `pmtiles://${PMTILES_URL}`,
     tileSize: 256,
-    minzoom: 0,
+    maxzoom: 8, // overzoomed (upscaled) for z9+ until chm-hi covers z10+
+  });
+  map.addSource("chm-hi", {
+    type: "raster",
+    url: `pmtiles://${PMTILES_URL}`,
+    tileSize: 256,
+    minzoom: 10,
     maxzoom: 14,
   });
-  map.addLayer({
-    id: "chm",
-    type: "raster",
-    source: "chm",
-    paint: {
-      "raster-opacity": state.opacity,
-      "raster-resampling": "nearest", // preserve exact height values
-      "raster-color-mix": [255, 0, 0, 0], // height(m) = R channel * 255
-      "raster-color-range": [0, 255],
-      "raster-color": rampExpr(state.hmin, state.hmax),
-    },
-  });
-  applyColor();
+  map.addLayer({ id: "chm-lo", type: "raster", source: "chm-lo", paint: RASTER_PAINT() });
+  map.addLayer({ id: "chm-hi", type: "raster", source: "chm-hi", paint: RASTER_PAINT() });
   map.on("moveend", scheduleMetrics);
   scheduleMetrics();
 });
@@ -98,9 +104,12 @@ function colorExpr() {
   return rampExpr(state.hmin, state.hmax);
 }
 function applyColor() {
-  if (!map.getLayer("chm")) return;
-  map.setPaintProperty("chm", "raster-color", colorExpr());
-  map.setPaintProperty("chm", "raster-opacity", state.opacity);
+  const expr = colorExpr();
+  for (const id of CHM_LAYERS) {
+    if (!map.getLayer(id)) continue;
+    map.setPaintProperty(id, "raster-color", expr);
+    map.setPaintProperty(id, "raster-opacity", state.opacity);
+  }
 }
 
 // ---- controls ----

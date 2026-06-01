@@ -16,7 +16,6 @@ import sqlite3
 import time
 from pathlib import Path
 
-import numpy as np
 import pyarrow.parquet as pq
 import rasterio
 from PIL import Image
@@ -37,30 +36,13 @@ os.environ.update(
 Z_NATIVE = 10
 
 
-def _build_lut() -> np.ndarray:
-    stops = [
-        (0, (0, 0, 0, 0)),
-        (1, (255, 255, 229, 255)),
-        (5, (217, 240, 163, 255)),
-        (10, (120, 198, 121, 255)),
-        (20, (35, 132, 67, 255)),
-        (30, (0, 104, 55, 255)),
-        (40, (0, 69, 41, 255)),
-    ]
-    lut = np.zeros((256, 4), dtype=np.uint8)
-    xs = [s[0] for s in stops]
-    for ch in range(4):
-        lut[:41, ch] = np.interp(np.arange(41), xs, [s[1][ch] for s in stops]).astype(np.uint8)
-    lut[41:] = lut[40]
-    lut[0] = (0, 0, 0, 0)
-    return lut
-
-
-LUT = _build_lut()
-
-
 def _source_tiles(zmax: int, qk: str):
-    """Yield (z, x_xyz, y_xyz, webp_bytes) web tiles z10..zmax for one source COG."""
+    """Yield (z, x_xyz, y_xyz, webp_bytes) web tiles z10..zmax for one source COG.
+
+    Tiles are RAW single-band canopy height (uint8 metres) as LOSSLESS grayscale WebP — the
+    height value is preserved so the client can threshold/colormap it on the GPU (maplibre
+    `raster-color`). Lossy compression is NOT allowed here: it would corrupt height values.
+    """
     url = f"s3://{SRC_BUCKET}/{SRC_PREFIX}/chm/{qk}.tif"
     x10, y10, _ = quadkey_to_tile(qk)
     with rasterio.open(url) as ds:
@@ -73,7 +55,7 @@ def _source_tiles(zmax: int, qk: str):
                     if block.max() == 0:
                         continue
                     buf = io.BytesIO()
-                    Image.fromarray(LUT[block], "RGBA").save(buf, "WEBP", quality=80, method=4)
+                    Image.fromarray(block, "L").save(buf, "WEBP", lossless=True, method=4)
                     yield z, x10 * s + i, y10 * s + j, buf.getvalue()
 
 

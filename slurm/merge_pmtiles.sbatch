@@ -13,8 +13,8 @@ set -euo pipefail
 export PATH="$HOME/.local/bin:$PATH"
 cd "$SLURM_SUBMIT_DIR"
 echo "host=$(hostname) start=$(date -Is) inputs=$(ls out/tiles_shards/shard_*.pmtiles | wc -l)"
-rm -f out/chm_z14.pmtiles
-pmtiles merge out/tiles_shards/shard_*.pmtiles out/chm_z14.pmtiles
-echo "=== result ==="; ls -la out/chm_z14.pmtiles
-pmtiles show out/chm_z14.pmtiles 2>&1 | head -20
+rm -f out/chm_height_z14.pmtiles
+pmtiles merge out/tiles_shards/shard_*.pmtiles out/chm_height_z14.pmtiles
+echo "=== result ==="; ls -la out/chm_height_z14.pmtiles
+pmtiles show out/chm_height_z14.pmtiles 2>&1 | head -20
 echo "exit=$? end=$(date -Is)"

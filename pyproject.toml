@@ -55,6 +55,14 @@ examples = [
   "odc-stac>=0.5.2",
   "rustac>=0.9.11",
 ]
+tiles = [
+  "pillow>=12.2",
+  "pmtiles>=3",
+  "rio-tiler>=6",
+]
+torchgeo = [
+  "torchgeo>=0.9",
+]
 
 [tool.ruff]
 target-version = "py312"
@@ -116,6 +124,7 @@ lint.extend-per-file-ignores."examples/**" = [
 lint.extend-per-file-ignores."scripts/**" = [
   "ANN001",
   "ANN201",
+  "ANN202",
 ]
 lint.extend-per-file-ignores."tests/**" = [
   "ANN001",
@@ -128,8 +137,9 @@ lint.isort.known-first-party = [ "chm_zarr" ]
 
 [tool.ty]
 # Type-check the package; exclude operational/example scripts whose numpy/xarray
-# dynamic attributes (e.g. DataArray.values -> ndarray) ty cannot narrow.
-src.exclude = [ "scripts/**", "slurm/**", "examples/**" ]
+# dynamic attributes (e.g. DataArray.values -> ndarray) ty cannot narrow, and the
+# torchgeo integration module (optional 'torchgeo' dep group, not in the default env).
+src.exclude = [ "scripts/**", "slurm/**", "examples/**", "src/chm_zarr/torchgeo_dataset.py" ]
 
 [tool.pytest]
 ini_options.testpaths = [ "tests" ]

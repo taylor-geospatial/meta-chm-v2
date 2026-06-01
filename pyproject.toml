@@ -60,9 +60,6 @@ tiles = [
   "pmtiles>=3",
   "rio-tiler>=6",
 ]
-torchgeo = [
-  "torchgeo>=0.9",
-]
 
 [tool.ruff]
 target-version = "py312"
@@ -137,9 +134,8 @@ lint.isort.known-first-party = [ "chm_zarr" ]
 
 [tool.ty]
 # Type-check the package; exclude operational/example scripts whose numpy/xarray
-# dynamic attributes (e.g. DataArray.values -> ndarray) ty cannot narrow, and the
-# torchgeo integration module (optional 'torchgeo' dep group, not in the default env).
-src.exclude = [ "scripts/**", "slurm/**", "examples/**", "src/chm_zarr/torchgeo_dataset.py" ]
+# dynamic attributes (e.g. DataArray.values -> ndarray) ty cannot narrow.
+src.exclude = [ "scripts/**", "slurm/**", "examples/**" ]
 
 [tool.pytest]
 ini_options.testpaths = [ "tests" ]

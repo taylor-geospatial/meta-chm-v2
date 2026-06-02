@@ -120,7 +120,9 @@ function rebuildLUT() {
           rgb = RAMP_RGB[k];
         }
       } else if (h >= hmin && h <= hmax) {
-        rgb = rampRGB((h - hmin) / Math.max(1, hmax - hmin));
+        // Color maps to a FIXED 0..MAX_M scale, so a given height always gets the same
+        // color; the range slider only filters which heights are visible, not their color.
+        rgb = rampRGB(h / MAX_M);
       }
     }
     const o = h * 4;
@@ -192,9 +194,6 @@ function syncLabels() {
   $("range-label").textContent = `${state.hmin}–${state.hmax} m`;
   $("forest-label").textContent = `${state.forest} m`;
   $("forest-row").hidden = state.mode !== "forest";
-  $("legend-min").textContent = state.hmin;
-  $("legend-mid").textContent = Math.round((state.hmin + state.hmax) / 2);
-  $("legend-max").textContent = `${state.hmax} m`;
 }
 $("mode").onchange = (e) => {
   state.mode = e.target.value;

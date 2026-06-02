@@ -20,8 +20,43 @@ const MAX_ANALYSIS_TILES = 64;
 const RAMP = ["#ffe87a", "#ffab4a", "#fb6a63", "#f5359a", "#c81e8c"];
 
 const $ = (id) => document.getElementById(id);
-const state = { mode: "ramp", hmin: 10, hmax: 60, forest: 5, opacity: 0.75 };
+const state = { mode: "ramp", hmin: 10, hmax: 60, forest: 5, opacity: 0.75, forestMask: false };
 const aoi = { drawing: false, verts: [], ring: null }; // drawn area-of-interest polygon
+
+// ESA WorldCover 2021 (10 m land cover) via Terrascope's open WMTS (EPSG:3857, PNG, CORS-ok).
+// Used two ways: a display overlay, and — when "Forest only" is on — a per-pixel mask so the
+// metrics count just tree pixels. Class colours are exact at z13–14 (native ~10 m); coarser
+// zooms resample/blend, so we nearest-match the 11-class palette.
+const WC_WMTS =
+  "https://services.terrascope.be/wmts/v2?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0" +
+  "&LAYER=WORLDCOVER_2021_MAP&STYLE=&FORMAT=image/png&TILEMATRIXSET=EPSG:3857" +
+  "&TILEMATRIX=EPSG:3857:{z}&TILEROW={y}&TILECOL={x}";
+const WC_TILE = (z, x, y) => WC_WMTS.replace("{z}", z).replace("{y}", y).replace("{x}", x);
+const WC_ATTR = "ESA WorldCover 2021 © ESA / contributors (via Terrascope)";
+// [r, g, b, classId] — WorldCover v200 palette. Forest = Tree cover (10) + Mangroves (95).
+const WC_PALETTE = [
+  [0, 100, 0, 10], [255, 187, 34, 20], [255, 255, 76, 30], [240, 150, 255, 40],
+  [250, 0, 0, 50], [180, 180, 180, 60], [240, 240, 240, 70], [0, 100, 200, 80],
+  [0, 150, 160, 90], [0, 207, 117, 95], [250, 230, 160, 100],
+];
+const WC_FOREST = new Set([10, 95]);
+const _wcClassCache = new Map(); // packed rgb -> nearest class (palette is fixed)
+function rgbToClass(r, g, b) {
+  const key = (r << 16) | (g << 8) | b;
+  const hit = _wcClassCache.get(key);
+  if (hit !== undefined) return hit;
+  let best = 0;
+  let bd = Infinity;
+  for (const [pr, pg, pb, cls] of WC_PALETTE) {
+    const d = (r - pr) ** 2 + (g - pg) ** 2 + (b - pb) ** 2;
+    if (d < bd) {
+      bd = d;
+      best = cls;
+    }
+  }
+  _wcClassCache.set(key, best);
+  return best;
+}
 
 // ---- maplibre + pmtiles ----
 // MapLibre has no GPU `raster-color`, so we colorize the raw grayscale height tiles
@@ -86,6 +121,12 @@ map.on("load", () => {
   const paint = { "raster-opacity": state.opacity, "raster-resampling": "nearest" };
   map.addLayer({ id: "chm-lo", type: "raster", source: "chm-lo", paint });
   map.addLayer({ id: "chm-hi", type: "raster", source: "chm-hi", paint });
+  // WorldCover overlay, slotted beneath the CHM layers, hidden until toggled on.
+  map.addSource("wc", { type: "raster", tiles: [WC_WMTS], tileSize: 256, maxzoom: 13, attribution: WC_ATTR });
+  map.addLayer(
+    { id: "wc-layer", type: "raster", source: "wc", layout: { visibility: "none" }, paint: { "raster-opacity": 0.7 } },
+    "chm-lo",
+  );
   setupAOI();
   map.on("moveend", scheduleMetrics);
   scheduleMetrics();
@@ -221,6 +262,13 @@ $("opacity").oninput = (e) => {
   state.opacity = +e.target.value / 100;
   applyOpacity();
 };
+$("wc-show").onchange = (e) => {
+  if (map.getLayer("wc-layer")) map.setLayoutProperty("wc-layer", "visibility", e.target.checked ? "visible" : "none");
+};
+$("wc-mask").onchange = (e) => {
+  state.forestMask = e.target.checked;
+  scheduleMetrics();
+};
 
 // ---- tile math ----
 const lon2x = (lon, z) => Math.floor(((lon + 180) / 360) * 2 ** z);
@@ -338,6 +386,38 @@ async function computeMetrics() {
     }
     CHMAnalytics.clipToPolygon(mosaic, W, H, ringPx);
   }
+  // Forest-only mask: fetch WorldCover for the same tiles, drop every CHM pixel that isn't a
+  // tree/mangrove class (-> 255 nodata) so the metrics describe forest, not built-up or crops.
+  let lcTreePct = null;
+  if (state.forestMask) {
+    const klass = new Uint8Array(W * H);
+    let wcOk = false;
+    for (const [x, y] of tiles) {
+      const cpx = await wcTilePixels(tz, x, y);
+      if (!cpx) continue;
+      wcOk = true;
+      const ox = (x - x0) * 256;
+      const oy = (y - y0) * 256;
+      for (let ty = 0; ty < 256; ty++) {
+        let dst = (oy + ty) * W + ox;
+        let src = ty * 256 * 4;
+        for (let tx = 0; tx < 256; tx++, dst++, src += 4) klass[dst] = rgbToClass(cpx[src], cpx[src + 1], cpx[src + 2]);
+      }
+    }
+    if (wcOk) {
+      let obs = 0;
+      let tree = 0;
+      for (let i = 0; i < mosaic.length; i++) {
+        if (mosaic[i] > 254) continue; // already nodata (outside AOI / no tile)
+        obs++;
+        if (WC_FOREST.has(klass[i])) tree++;
+        else mosaic[i] = 255; // not forest -> drop from every metric
+      }
+      lcTreePct = obs ? (100 * tree) / obs : 0;
+    } else {
+      toast("WorldCover tiles unavailable — showing all canopy");
+    }
+  }
   // metres per pixel at this zoom + extent-centre latitude
   const latC = (bb.n + bb.s) / 2;
   const mpp = (156543.03392 * Math.cos((latC * Math.PI) / 180)) / 2 ** tz;
@@ -360,12 +440,18 @@ async function computeMetrics() {
   const coverRange = (100 * inRange) / A.observed;
   const thr = state.forest;
   const scope = poly ? `AOI · ${fmtArea(A.observed * pxArea)}` : "View";
+  const masked = state.forestMask && lcTreePct !== null;
+  const treeRow =
+    lcTreePct !== null
+      ? `<div class="stat"><span title="Share of the area classed Tree cover / Mangroves by ESA WorldCover">Tree cover (WorldCover)</span><b>${lcTreePct.toFixed(1)}%</b></div>`
+      : "";
 
   body.className = "";
   body.innerHTML = `
-    <div class="stat ghead"><span>${scope} · range ${lo}–${hi} m</span></div>
+    <div class="stat ghead"><span>${scope} · range ${lo}–${hi} m${masked ? " · trees only" : ""}</span></div>
     <div class="stat"><span>Cover in range</span><b>${coverRange.toFixed(1)}%</b></div>
     <div class="stat"><span>Area in range</span><b>${fmtArea(areaKm2 * 1e6)}</b></div>
+    ${treeRow}
     <div class="stat ghead"><span>Canopy height</span></div>
     <div class="stat"><span>Mean (vegetated)</span><b>${A.mean.toFixed(1)} m</b></div>
     <div class="stat"><span title="98th pct — robust stand top (GEDI RH98 analogue)">Top height p98</span><b>${A.p.p98} m</b></div>
@@ -399,6 +485,22 @@ async function tilePixels(z, x, y) {
     _bmpCtx.clearRect(0, 0, 256, 256);
     _bmpCtx.drawImage(bmp, 0, 0);
     return _bmpCtx.getImageData(0, 0, 256, 256).data;
+  } catch {
+    return null;
+  }
+}
+
+const _wcCanvas = document.createElement("canvas");
+_wcCanvas.width = _wcCanvas.height = 256;
+const _wcCtx = _wcCanvas.getContext("2d", { willReadFrequently: true });
+async function wcTilePixels(z, x, y) {
+  try {
+    const resp = await fetch(WC_TILE(z, x, y));
+    if (!resp.ok) return null;
+    const bmp = await createImageBitmap(await resp.blob());
+    _wcCtx.clearRect(0, 0, 256, 256);
+    _wcCtx.drawImage(bmp, 0, 0);
+    return _wcCtx.getImageData(0, 0, 256, 256).data;
   } catch {
     return null;
   }
@@ -593,5 +695,6 @@ window.__setAOI = (verts) => {
   syncAOIButtons();
   scheduleMetrics();
 };
+window.__clearAOI = () => clearAOI();
 
 syncLabels();

@@ -17,7 +17,7 @@ const MAX_ANALYSIS_TILES = 64;
 const RAMP = ["#ffffe5", "#d9f0a3", "#78c679", "#238443", "#004529"]; // YlGn
 
 const $ = (id) => document.getElementById(id);
-const state = { mode: "ramp", hmin: 0, hmax: 50, forest: 5, opacity: 0.9 };
+const state = { mode: "ramp", hmin: 10, hmax: 60, forest: 5, opacity: 0.75 };
 
 // ---- maplibre + pmtiles ----
 // MapLibre has no GPU `raster-color`, so we colorize the raw grayscale height tiles
@@ -189,6 +189,9 @@ function syncLabels() {
   $("range-label").textContent = `${state.hmin}–${state.hmax} m`;
   $("forest-label").textContent = `${state.forest} m`;
   $("forest-row").hidden = state.mode !== "forest";
+  $("legend-min").textContent = state.hmin;
+  $("legend-mid").textContent = Math.round((state.hmin + state.hmax) / 2);
+  $("legend-max").textContent = `${state.hmax} m`;
 }
 $("mode").onchange = (e) => {
   state.mode = e.target.value;

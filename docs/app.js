@@ -28,6 +28,7 @@ const state = { mode: "ramp", hmin: 10, hmax: 60, forest: 5, opacity: 0.75 };
 // maps height(m) -> RGBA through a lookup table (rebuilt from the sliders), and hands
 // MapLibre a ready-to-draw PNG. PMTiles caches the raw bytes, so recoloring is canvas-only.
 const pm = new PMTiles(PMTILES_URL);
+pm.getHeader(); // warm header + root directory before the first tile request
 maplibregl.addProtocol("chm", chmProtocol);
 
 // Sentinel-2 cloudless basemap (EOX::Maps) as an inline raster style — no external
@@ -138,17 +139,17 @@ function rebuildLUT() {
 }
 
 // Custom protocol: pull a tile from the PMTiles archive, recolor through the LUT -> PNG.
+const _oc = new OffscreenCanvas(256, 256);
+const _ocx = _oc.getContext("2d", { willReadFrequently: true });
 async function chmProtocol(params) {
   const m = params.url.match(/chm:\/\/(\d+)\/(\d+)\/(\d+)/);
   if (!m) return { data: await emptyTile() };
   const r = await pm.getZxy(+m[1], +m[2], +m[3]);
   if (!r) return { data: await emptyTile() }; // ocean / out-of-coverage tile
   const bmp = await createImageBitmap(new Blob([r.data], { type: "image/webp" }));
-  const cv = document.createElement("canvas");
-  cv.width = cv.height = 256;
-  const cx = cv.getContext("2d", { willReadFrequently: true });
-  cx.drawImage(bmp, 0, 0, 256, 256);
-  const img = cx.getImageData(0, 0, 256, 256);
+  _ocx.drawImage(bmp, 0, 0, 256, 256);
+  bmp.close();
+  const img = _ocx.getImageData(0, 0, 256, 256);
   const d = img.data;
   for (let i = 0; i < d.length; i += 4) {
     const o = d[i] * 4; // R channel = height in metres
@@ -157,18 +158,13 @@ async function chmProtocol(params) {
     d[i + 2] = LUT[o + 2];
     d[i + 3] = LUT[o + 3];
   }
-  cx.putImageData(img, 0, 0);
-  const blob = await new Promise((res) => cv.toBlob(res, "image/png"));
-  return { data: await blob.arrayBuffer() };
+  // Hand maplibre a ready-decoded ImageBitmap — skips the PNG re-encode here AND maplibre's
+  // re-decode on the other side (2 fewer codec passes per tile vs. round-tripping a Blob).
+  return { data: await createImageBitmap(img) };
 }
-let _emptyTile;
 function emptyTile() {
-  if (!_emptyTile) {
-    const cv = document.createElement("canvas");
-    cv.width = cv.height = 256;
-    _emptyTile = new Promise((res) => cv.toBlob((b) => b.arrayBuffer().then(res), "image/png"));
-  }
-  return _emptyTile;
+  // fresh each call: maplibre transfers the bitmap to a worker (neuters it), so no sharing
+  return createImageBitmap(new ImageData(256, 256));
 }
 
 let recolorTimer;

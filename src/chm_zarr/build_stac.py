@@ -68,7 +68,7 @@ def _build_collection(spatial_bbox: list[float], temporal: tuple) -> pystac.Coll
                 url="https://dataforgood.facebook.com/dfg/tools/canopy-height-maps",
             ),
             pystac.Provider(
-                name="Taylor Geospatial Engine Labs",
+                name="Taylor Geospatial",
                 roles=[pystac.ProviderRole.PROCESSOR, pystac.ProviderRole.HOST],
                 url="https://taylorgeospatial.org",
             ),

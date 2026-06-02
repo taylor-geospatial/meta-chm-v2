@@ -14,9 +14,10 @@ const COG_BASE =
 const MAX_M = 60; // slider ceiling (canopy rarely exceeds ~50 m)
 const MIN_ANALYSIS_ZOOM = 11; // metrics only when the view is a handful of tiles
 const MAX_ANALYSIS_TILES = 64;
-// Magma-ish magenta ramp (low->high). Pink is green's complement, so canopy pops hard
-// against the Sentinel-2 forest backdrop instead of blending in. Taller = hotter pink.
-const RAMP = ["#1f0a2e", "#5e1668", "#a52a7f", "#e23e8f", "#ff5db1"];
+// Bright warm->magenta ramp (low->high). Every stop is high-luminance so even low canopy
+// (the most common) stays visible; none are dark. Non-green so it pops over the Sentinel-2
+// forest backdrop. Low = bright yellow, tall = hot magenta.
+const RAMP = ["#ffe87a", "#ffab4a", "#fb6a63", "#f5359a", "#c81e8c"];
 
 const $ = (id) => document.getElementById(id);
 const state = { mode: "ramp", hmin: 10, hmax: 60, forest: 5, opacity: 0.75 };

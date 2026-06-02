@@ -121,7 +121,7 @@ select {
   display: block;
   height: 9px;
   border-radius: 5px;
-  background: linear-gradient(90deg, #1f0a2e, #5e1668, #a52a7f, #e23e8f, #ff5db1);
+  background: linear-gradient(90deg, #ffe87a, #ffab4a, #fb6a63, #f5359a, #c81e8c);
 }
 .legend .ticks {
   display: flex;

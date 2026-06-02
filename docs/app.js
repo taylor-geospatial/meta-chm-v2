@@ -14,7 +14,9 @@ const COG_BASE =
 const MAX_M = 60; // slider ceiling (canopy rarely exceeds ~50 m)
 const MIN_ANALYSIS_ZOOM = 11; // metrics only when the view is a handful of tiles
 const MAX_ANALYSIS_TILES = 64;
-const RAMP = ["#ffffe5", "#d9f0a3", "#78c679", "#238443", "#004529"]; // YlGn
+// Magma-ish magenta ramp (low->high). Pink is green's complement, so canopy pops hard
+// against the Sentinel-2 forest backdrop instead of blending in. Taller = hotter pink.
+const RAMP = ["#1f0a2e", "#5e1668", "#a52a7f", "#e23e8f", "#ff5db1"];
 
 const $ = (id) => document.getElementById(id);
 const state = { mode: "ramp", hmin: 10, hmax: 60, forest: 5, opacity: 0.75 };
@@ -350,7 +352,7 @@ function drawHist(counts, lo, hi) {
   const bw = W / (top - 1);
   for (let h = 1; h < top; h++) {
     const bh = (counts[h] / peak) * (H - 14);
-    ctx.fillStyle = h >= lo && h <= hi ? "#4ade80" : "rgba(135,153,138,0.4)";
+    ctx.fillStyle = h >= lo && h <= hi ? "#ff5db1" : "rgba(150,135,150,0.4)";
     ctx.fillRect((h - 1) * bw, H - bh - 12, Math.max(bw - 1, 1), bh);
   }
   ctx.fillStyle = "#87998a";

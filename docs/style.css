@@ -1,11 +1,11 @@
 :root {
-  --bg: #070b08;
-  --panel: rgba(12, 20, 14, 0.84);
-  --panel-edge: rgba(124, 255, 138, 0.16);
-  --ink: #e7f1e8;
-  --muted: #87998a;
-  --accent: #4ade80;
-  --accent-2: #d9f99d;
+  --bg: #0a0710;
+  --panel: rgba(18, 12, 22, 0.84);
+  --panel-edge: rgba(255, 93, 177, 0.18);
+  --ink: #f1e7ef;
+  --muted: #a08aa0;
+  --accent: #ff5db1;
+  --accent-2: #ff9ed6;
   --row: rgba(255, 255, 255, 0.03);
 }
 * {
@@ -121,7 +121,7 @@ select {
   display: block;
   height: 9px;
   border-radius: 5px;
-  background: linear-gradient(90deg, #ffffe5, #d9f0a3, #78c679, #238443, #004529);
+  background: linear-gradient(90deg, #1f0a2e, #5e1668, #a52a7f, #e23e8f, #ff5db1);
 }
 .legend .ticks {
   display: flex;

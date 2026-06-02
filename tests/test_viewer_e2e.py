@@ -1,0 +1,108 @@
+"""End-to-end browser test for the canopy-height viewer.
+
+Serves docs/ over a local HTTP server, drives the real app with Playwright
+(SwiftShader WebGL so MapLibre runs headless), flies to a forested view, and
+asserts the forest-structure analytics compute from live source.coop tiles.
+
+Requires network (source.coop + EOX) and a Playwright Chromium build:
+    uv run playwright install chromium
+Run with:  uv run pytest tests/test_viewer_e2e.py -v
+"""
+
+import functools
+import http.server
+import json
+import re
+import threading
+from pathlib import Path
+
+import pytest
+from playwright.sync_api import sync_playwright
+
+DOCS = Path(__file__).resolve().parent.parent / "docs"
+
+# Black Forest, DE — dense canopy with real CHM coverage; z12 keeps the view to a few tiles.
+VIEW = {"center": [8.21, 48.27], "zoom": 12}
+
+# Run the fly-to in the page, then poll the metrics panel until the analytics footer
+# ("<n> ms · ...") appears, signalling a completed compute pass.
+DRIVE_JS = """
+async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  for (let i = 0; i < 80 && !window.__map; i++) await sleep(150);
+  if (!window.__map) return { ok: false, text: "map failed to init (WebGL?)" };
+  const map = window.__map;
+  await new Promise((res) => {
+    map.once("idle", res);
+    map.jumpTo(__VIEW__);
+    setTimeout(res, 8000);
+  });
+  const body = document.getElementById("metrics-body");
+  for (let i = 0; i < 120; i++) {
+    const t = body.innerText || "";
+    if (t.includes("ms \\u00b7")) return { ok: true, text: t };
+    if (/no (canopy|data)/i.test(t)) return { ok: false, text: t };
+    await sleep(250);
+  }
+  return { ok: false, text: "timeout: " + (body.innerText || "") };
+}
+""".replace("__VIEW__", json.dumps(VIEW))
+
+
+@pytest.fixture(scope="module")
+def app_url():
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(DOCS))
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+
+
+@pytest.fixture(scope="module")
+def page(app_url):
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(
+            args=[
+                "--use-gl=angle",
+                "--use-angle=swiftshader",
+                "--enable-unsafe-swiftshader",
+                "--ignore-gpu-blocklist",
+            ],
+        )
+        pg = browser.new_page(viewport={"width": 1280, "height": 900})
+        pg.goto(app_url + "/index.html", wait_until="load")
+        yield pg
+        browser.close()
+
+
+def test_panel_renders(page):
+    # Static UI must render even before any tiles load.
+    assert "Canopy Height Analysis" in page.inner_text("h1")
+    assert page.is_visible("#forest-thr")  # canopy threshold now always shown
+
+
+def test_live_structure_metrics(page):
+    result = page.evaluate(DRIVE_JS)
+    text = result["text"]
+    assert result["ok"], f"metrics did not compute: {text!r}"
+    # every analytics section + the new structure metrics are present
+    for label in [
+        "CANOPY HEIGHT",
+        "STRUCTURE",
+        "Top height p98",
+        "Rugosity",
+        "Rumple index",
+        "Canopy gaps",
+        "Core forest",
+    ]:
+        assert label in text, f"missing {label!r} in:\n{text}"
+    # p98 is a robust top height: present, positive, and <= max
+    p98_m = re.search(r"Top height p98\s*\n?\s*(\d+)\s*m", text)
+    max_m = re.search(r"Max\s*\n?\s*(\d+)\s*m", text)
+    assert p98_m, f"could not parse p98 from:\n{text}"
+    assert max_m, f"could not parse max from:\n{text}"
+    p98, mx = int(p98_m.group(1)), int(max_m.group(1))
+    assert 0 < p98 <= mx, f"p98={p98} max={mx}"

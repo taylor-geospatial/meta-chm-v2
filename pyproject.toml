@@ -45,9 +45,11 @@ scripts.chm-build-virtual-zarr = "chm_zarr.cli:build_virtual_zarr"
 
 [dependency-groups]
 dev = [
+  "playwright>=1.60",
   "pre-commit>=4.3",
   "pytest>=8.4.2",
   "pytest-cov>=7",
+  "pytest-playwright>=0.8",
   "ruff>=0.14.1",
   "ty>=0.0.1a23",
 ]

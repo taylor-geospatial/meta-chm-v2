@@ -12,9 +12,15 @@
 set -euo pipefail
 export PATH="$HOME/.local/bin:$PATH"
 cd "$SLURM_SUBMIT_DIR"
-echo "host=$(hostname) start=$(date -Is) inputs=$(ls out/tiles_shards/shard_*.pmtiles | wc -l)"
-rm -f out/chm_height_z14.pmtiles
-pmtiles merge out/tiles_shards/shard_*.pmtiles out/chm_height_z14.pmtiles
-echo "=== result ==="; ls -la out/chm_height_z14.pmtiles
-pmtiles show out/chm_height_z14.pmtiles 2>&1 | head -20
+T="${TMPDIR:-/tmp}"
+echo "host=$(hostname) start=$(date -Is)"
+echo "=== convert z0-8 overview tiles -> pmtiles (tmpfs) ==="
+cp out/tiles_lo.mbtiles "$T/lo.mbtiles"
+pmtiles convert "$T/lo.mbtiles" "$T/tiles_lo.pmtiles"
+cp "$T/tiles_lo.pmtiles" out/tiles_lo.pmtiles
+echo "=== merge 1000 z10-14 shards + z0-8 overview -> chm_height.pmtiles ==="
+rm -f out/chm_height.pmtiles
+pmtiles merge out/tiles_shards/shard_*.pmtiles out/tiles_lo.pmtiles out/chm_height.pmtiles
+echo "=== result ==="; ls -la out/chm_height.pmtiles
+pmtiles show out/chm_height.pmtiles 2>&1 | grep -iE "tile type|bounds|zoom|tile entries|addressed" | head
 echo "exit=$? end=$(date -Is)"

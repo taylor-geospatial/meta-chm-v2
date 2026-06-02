@@ -6,7 +6,7 @@ copying the ~24 TB of source rasters.
 
 **Live tile browser:** <https://research.taylorgeospatial.org/meta-chm-v2/> — a
 fully static (serverless) map that filters the STAC GeoParquet in-browser with
-duckdb-wasm and links direct COG downloads. Source in [`web/`](web/).
+duckdb-wasm and links direct COG downloads. Source in [`docs/`](docs/).
 
 The source dataset (`s3://dataforgood-fb-data/forests/v2/global/dinov3_global_chm_v2_ml3/`)
 is 213,109 Web-Mercator COG tiles plus a 56 MB `tiles.geojson` and 208k tiny per-tile

@@ -37,10 +37,16 @@ def build_tiles(
 @click.option(
     "--out-dir", type=click.Path(file_okay=False, path_type=Path), default=Path("out/stac")
 )
-def build_stac(tiles_parquet: Path, out_dir: Path) -> None:
+@click.option(
+    "--acq-dates",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Parquet of per-tile acquisition dates (quadkey, acq_start, acq_end, acq_n)",
+)
+def build_stac(tiles_parquet: Path, out_dir: Path, acq_dates: Path | None) -> None:
     from .build_stac import build
 
-    build(tiles_parquet, out_dir)
+    build(tiles_parquet, out_dir, acq_dates=acq_dates)
 
 
 @click.command("build-virtual-zarr")

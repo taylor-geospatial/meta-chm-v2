@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import geopandas as gpd
+import pandas as pd
 import pyarrow.parquet as pq
 import pystac
 import stac_geoparquet
@@ -47,7 +48,7 @@ R_MERC = 20037508.342789244
 PX_3857_NATIVE = 2 * R_MERC / (1024 * 32768)  # ≈ 1.1943 m/px at equator
 
 
-def _build_collection(spatial_bbox: list[float]) -> pystac.Collection:
+def _build_collection(spatial_bbox: list[float], temporal: tuple) -> pystac.Collection:
     coll = pystac.Collection(
         id=COLLECTION_ID,
         title=COLLECTION_TITLE,
@@ -55,7 +56,7 @@ def _build_collection(spatial_bbox: list[float]) -> pystac.Collection:
         license="CC-BY-4.0",
         extent=pystac.Extent(
             spatial=pystac.SpatialExtent([spatial_bbox]),
-            temporal=pystac.TemporalExtent([list(TEMPORAL_EXTENT)]),
+            temporal=pystac.TemporalExtent([list(temporal)]),
         ),
         providers=[
             pystac.Provider(
@@ -97,18 +98,21 @@ def _build_item(row: dict) -> pystac.Item:
         bb3857["maxy"],
     )
 
+    # A tile is a spatial mosaic of single-date images spanning years; we use the LATEST
+    # acquisition as the tile's "as-of" observation date (a single instant). chm:acq_count
+    # records how many distinct source dates the tile actually mosaics.
+    dt = row["dt"].to_pydatetime()  # tz-aware datetime; fillna guarantees non-null
     item = pystac.Item(
         id=qk,
         geometry=geom,
         bbox=bbox,
-        datetime=TEMPORAL_EXTENT[0],
-        start_datetime=TEMPORAL_EXTENT[0],
-        end_datetime=TEMPORAL_EXTENT[1],
+        datetime=dt,
         properties={
             "tile:quadkey": qk,
             "tile:z": z,
             "tile:x": x,
             "tile:y": y,
+            "chm:acq_count": int(row["acq_n"]),
         },
         collection=COLLECTION_ID,
     )
@@ -143,14 +147,34 @@ def _build_item(row: dict) -> pystac.Item:
     return item
 
 
-def build(tiles_parquet: Path, out_dir: Path, sample_json: int = 200) -> None:
+def build(
+    tiles_parquet: Path, out_dir: Path, acq_dates: Path | None = None, sample_json: int = 200
+) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"reading {tiles_parquet}")
     gdf = gpd.read_parquet(tiles_parquet)
     print(f"  {len(gdf):,} tiles")
 
+    # Join per-tile acquisition dates (min/max/count). Tiles with no source metadata fall
+    # back to the global window so a time query still includes them.
+    if acq_dates is not None:
+        adf = pd.read_parquet(acq_dates, columns=["quadkey", "acq_end", "acq_n"])
+        adf["dt"] = pd.to_datetime(adf["acq_end"], utc=True)  # latest acquisition per tile
+        gdf = gdf.merge(adf[["quadkey", "dt", "acq_n"]], on="quadkey", how="left")
+    else:
+        gdf["dt"] = pd.NaT
+        gdf["acq_n"] = 0
+    gmin = pd.Timestamp(gdf["dt"].min())
+    gmax = pd.Timestamp(gdf["dt"].max())
+    if pd.isna(gmin):
+        gmin, gmax = pd.Timestamp(TEMPORAL_EXTENT[0]), pd.Timestamp(TEMPORAL_EXTENT[1])
+    gdf["dt"] = gdf["dt"].fillna(gmax)  # undated tiles -> global latest
+    gdf["acq_n"] = gdf["acq_n"].fillna(0).astype(int)
+    n_dated = int((gdf["acq_n"] > 0).sum())
+    print(f"  acquisition (latest per tile): {n_dated:,} dated, range {gmin.date()}..{gmax.date()}")
+
     total_bbox = [float(v) for v in gdf.total_bounds]
-    coll = _build_collection(total_bbox)
+    coll = _build_collection(total_bbox, (gmin.to_pydatetime(), gmax.to_pydatetime()))
     coll.set_self_href(DST_COLLECTION_URL)
     coll.add_link(
         pystac.Link(

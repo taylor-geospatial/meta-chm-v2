@@ -14,7 +14,7 @@
       href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
       rel="stylesheet"
     />
-    <link href="https://esm.sh/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+    <link href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css" rel="stylesheet" />
     <link href="./style.css" rel="stylesheet" />
   </head>
   <body>
@@ -82,6 +82,9 @@
     </aside>
 
     <div id="toast" hidden></div>
-    <script type="module" src="./app.js"></script>
+    <!-- UMD globals (maplibregl, pmtiles) — avoids esm.sh worker-bundling failures -->
+    <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
+    <script src="https://unpkg.com/pmtiles@3.2.1/dist/pmtiles.js"></script>
+    <script src="./app.js"></script>
   </body>
 </html>

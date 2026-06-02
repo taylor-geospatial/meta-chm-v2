@@ -4,10 +4,11 @@
 // Quantitative metrics (cover/area/mean/max/histogram) read the actual tile pixels via the
 // PMTiles JS API — gated behind a zoom so we never scan the whole globe.
 
-import maplibregl from "https://esm.sh/maplibre-gl@4.7.1";
-import { PMTiles, Protocol } from "https://esm.sh/pmtiles@3.2.1";
+// maplibregl + pmtiles are UMD globals (loaded via <script> in index.html).
+const { PMTiles } = pmtiles;
 
 const PMTILES_URL = "https://data.source.coop/tge-labs/meta-chm-v2/pmtiles/chm_height.pmtiles";
+const EOX_YEAR = 2024; // Sentinel-2 cloudless mosaic year (EOX::Maps)
 const COG_BASE =
   "https://dataforgood-fb-data.s3.amazonaws.com/forests/v2/global/dinov3_global_chm_v2_ml3/chm";
 const MAX_M = 60; // slider ceiling (canopy rarely exceeds ~50 m)
@@ -19,14 +20,38 @@ const $ = (id) => document.getElementById(id);
 const state = { mode: "ramp", hmin: 0, hmax: 50, forest: 5, opacity: 0.9 };
 
 // ---- maplibre + pmtiles ----
-const protocol = new Protocol();
-maplibregl.addProtocol("pmtiles", protocol.tile);
+// MapLibre has no GPU `raster-color`, so we colorize the raw grayscale height tiles
+// ourselves: a custom `chm://` protocol pulls each tile's bytes from the PMTiles archive,
+// maps height(m) -> RGBA through a lookup table (rebuilt from the sliders), and hands
+// MapLibre a ready-to-draw PNG. PMTiles caches the raw bytes, so recoloring is canvas-only.
 const pm = new PMTiles(PMTILES_URL);
-protocol.add(pm); // share the instance so metrics + map reuse one cache
+maplibregl.addProtocol("chm", chmProtocol);
+
+// Sentinel-2 cloudless basemap (EOX::Maps) as an inline raster style — no external
+// style.json dependency, and gives the canopy a real-world satellite backdrop.
+const EOX_TILES = `https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-${EOX_YEAR}_3857/default/g/{z}/{y}/{x}.jpg`;
+const EOX_ATTR =
+  `Sentinel-2 cloudless ${EOX_YEAR} by <a href="https://s2maps.eu" target="_blank" rel="noopener">EOX IT Services GmbH</a>`;
+const baseStyle = {
+  version: 8,
+  sources: {
+    s2: {
+      type: "raster",
+      tiles: [EOX_TILES],
+      tileSize: 256,
+      maxzoom: 16, // EOX overzooms server-side past native ~z14
+      attribution: EOX_ATTR,
+    },
+  },
+  layers: [
+    { id: "bg", type: "background", paint: { "background-color": "#060a0f" } },
+    { id: "s2", type: "raster", source: "s2" },
+  ],
+};
 
 const map = new maplibregl.Map({
   container: "map",
-  style: "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+  style: baseStyle,
   center: [13.4, 52.5],
   zoom: 9,
   maxZoom: 16,
@@ -34,81 +59,128 @@ const map = new maplibregl.Map({
 });
 map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
 map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-right");
+window.__map = map; // debugging handle
 
-// One PMTiles archive (z0-8 overview + z10-14 detail), used as two raster layers so
-// maplibre overzooms the z8 overview to fill z9 (no gap) and the crisp z10-14 takes over.
-const CHM_LAYERS = ["chm-lo", "chm-hi"];
-const RASTER_PAINT = () => ({
-  "raster-opacity": state.opacity,
-  "raster-resampling": "nearest", // preserve exact height values
-  "raster-color-mix": [255, 0, 0, 0], // height(m) = R channel * 255
-  "raster-color-range": [0, 255],
-  "raster-color": colorExpr(),
+// Never fail silently again — surface load/source/tile errors on screen + console.
+map.on("error", (e) => {
+  const msg = (e && e.error && e.error.message) || "map error";
+  console.error("[chm]", e && e.error ? e.error : e);
+  toast(msg);
 });
 
+// One PMTiles archive (z0-8 overview + z10-14 detail), drawn as two raster layers so
+// maplibre overzooms the z8 overview to fill z9 (no gap) and the crisp z10-14 takes over.
+const CHM_LAYERS = ["chm-lo", "chm-hi"];
+let colorVer = 0; // bumped to bust maplibre's tile cache when the colormap changes
+const chmTiles = () => [`chm://{z}/{x}/{y}?v=${colorVer}`];
+
 map.on("load", () => {
-  map.addSource("chm-lo", {
-    type: "raster",
-    url: `pmtiles://${PMTILES_URL}`,
-    tileSize: 256,
-    maxzoom: 8, // overzoomed (upscaled) for z9+ until chm-hi covers z10+
-  });
-  map.addSource("chm-hi", {
-    type: "raster",
-    url: `pmtiles://${PMTILES_URL}`,
-    tileSize: 256,
-    minzoom: 10,
-    maxzoom: 14,
-  });
-  map.addLayer({ id: "chm-lo", type: "raster", source: "chm-lo", paint: RASTER_PAINT() });
-  map.addLayer({ id: "chm-hi", type: "raster", source: "chm-hi", paint: RASTER_PAINT() });
+  rebuildLUT();
+  map.addSource("chm-lo", { type: "raster", tiles: chmTiles(), tileSize: 256, minzoom: 0, maxzoom: 8 });
+  map.addSource("chm-hi", { type: "raster", tiles: chmTiles(), tileSize: 256, minzoom: 10, maxzoom: 14 });
+  const paint = { "raster-opacity": state.opacity, "raster-resampling": "nearest" };
+  map.addLayer({ id: "chm-lo", type: "raster", source: "chm-lo", paint });
+  map.addLayer({ id: "chm-hi", type: "raster", source: "chm-hi", paint });
   map.on("moveend", scheduleMetrics);
   scheduleMetrics();
 });
 
-// ---- raster-color expressions (metres on ["raster-value"]) ----
-function transparent() {
-  return "rgba(0,0,0,0)";
+// ---- client-side colorization: height(metres) -> RGBA via a 256-entry LUT ----
+const RAMP_RGB = RAMP.map((h) => [
+  parseInt(h.slice(1, 3), 16),
+  parseInt(h.slice(3, 5), 16),
+  parseInt(h.slice(5, 7), 16),
+]);
+const LUT = new Uint8ClampedArray(256 * 4); // height byte -> rgba
+
+function rampRGB(t) {
+  const x = Math.max(0, Math.min(1, t)) * (RAMP_RGB.length - 1);
+  const i = Math.min(RAMP_RGB.length - 2, Math.floor(x));
+  const f = x - i;
+  const a = RAMP_RGB[i];
+  const b = RAMP_RGB[i + 1];
+  return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
 }
-function rampExpr(lo, hi) {
-  hi = Math.max(hi, lo + 1);
-  const stops = [0, transparent()];
-  if (lo > 0) stops.push(lo - 0.001, transparent());
-  for (let k = 0; k < RAMP.length; k++) {
-    stops.push(lo + (k / (RAMP.length - 1)) * (hi - lo), RAMP[k]);
+function rebuildLUT() {
+  const { mode, hmin, hmax, forest } = state;
+  const edges = [0, 2, 5, 10, 20]; // lower bound of each discrete class -> RAMP_RGB index
+  for (let h = 0; h < 256; h++) {
+    let rgb = null;
+    // h===0 is no-canopy; h===255 is overview nodata fill — both stay transparent.
+    if (h > 0 && h < 255) {
+      if (mode === "forest") {
+        if (h >= forest) rgb = RAMP_RGB[3];
+      } else if (mode === "classes") {
+        if (h >= hmin && h <= hmax) {
+          let k = 0;
+          for (let e = 0; e < edges.length; e++) if (h >= edges[e]) k = e;
+          rgb = RAMP_RGB[k];
+        }
+      } else if (h >= hmin && h <= hmax) {
+        rgb = rampRGB((h - hmin) / Math.max(1, hmax - hmin));
+      }
+    }
+    const o = h * 4;
+    if (rgb) {
+      LUT[o] = rgb[0];
+      LUT[o + 1] = rgb[1];
+      LUT[o + 2] = rgb[2];
+      LUT[o + 3] = 255;
+    } else {
+      LUT[o] = LUT[o + 1] = LUT[o + 2] = LUT[o + 3] = 0;
+    }
   }
-  stops.push(hi + 0.001, transparent());
-  return ["interpolate", ["linear"], ["raster-value"], ...stops];
 }
-function classesExpr(lo, hi) {
-  // discrete height classes within [lo,hi]; transparent outside
-  const edges = [2, 5, 10, 20, 30];
-  const expr = ["step", ["raster-value"], transparent()];
-  let first = true;
-  for (let k = 0; k < RAMP.length; k++) {
-    const e = k === 0 ? Math.max(lo, 0.5) : edges[k - 1];
-    if (e <= lo || e > hi) continue;
-    expr.push(e, RAMP[k]);
-    first = false;
+
+// Custom protocol: pull a tile from the PMTiles archive, recolor through the LUT -> PNG.
+async function chmProtocol(params) {
+  const m = params.url.match(/chm:\/\/(\d+)\/(\d+)\/(\d+)/);
+  if (!m) return { data: await emptyTile() };
+  const r = await pm.getZxy(+m[1], +m[2], +m[3]);
+  if (!r) return { data: await emptyTile() }; // ocean / out-of-coverage tile
+  const bmp = await createImageBitmap(new Blob([r.data], { type: "image/webp" }));
+  const cv = document.createElement("canvas");
+  cv.width = cv.height = 256;
+  const cx = cv.getContext("2d", { willReadFrequently: true });
+  cx.drawImage(bmp, 0, 0, 256, 256);
+  const img = cx.getImageData(0, 0, 256, 256);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const o = d[i] * 4; // R channel = height in metres
+    d[i] = LUT[o];
+    d[i + 1] = LUT[o + 1];
+    d[i + 2] = LUT[o + 2];
+    d[i + 3] = LUT[o + 3];
   }
-  if (first) expr.push(Math.max(lo, 0.5), RAMP[2]);
-  // clip above hi
-  return ["case", [">", ["raster-value"], hi], transparent(), expr];
+  cx.putImageData(img, 0, 0);
+  const blob = await new Promise((res) => cv.toBlob(res, "image/png"));
+  return { data: await blob.arrayBuffer() };
 }
-function forestExpr(thr) {
-  return ["step", ["raster-value"], transparent(), Math.max(thr, 0.5), "#238443"];
+let _emptyTile;
+function emptyTile() {
+  if (!_emptyTile) {
+    const cv = document.createElement("canvas");
+    cv.width = cv.height = 256;
+    _emptyTile = new Promise((res) => cv.toBlob((b) => b.arrayBuffer().then(res), "image/png"));
+  }
+  return _emptyTile;
 }
-function colorExpr() {
-  if (state.mode === "forest") return forestExpr(state.forest);
-  if (state.mode === "classes") return classesExpr(state.hmin, state.hmax);
-  return rampExpr(state.hmin, state.hmax);
-}
+
+let recolorTimer;
 function applyColor() {
-  const expr = colorExpr();
+  rebuildLUT();
+  clearTimeout(recolorTimer);
+  recolorTimer = setTimeout(() => {
+    colorVer++; // new URL -> maplibre refetches; raw bytes are cached, so this is canvas-only
+    for (const id of ["chm-lo", "chm-hi"]) {
+      const s = map.getSource(id);
+      if (s && s.setTiles) s.setTiles(chmTiles());
+    }
+  }, 140); // debounce slider drags
+}
+function applyOpacity() {
   for (const id of CHM_LAYERS) {
-    if (!map.getLayer(id)) continue;
-    map.setPaintProperty(id, "raster-color", expr);
-    map.setPaintProperty(id, "raster-opacity", state.opacity);
+    if (map.getLayer(id)) map.setPaintProperty(id, "raster-opacity", state.opacity);
   }
 }
 
@@ -145,7 +217,7 @@ $("forest-thr").oninput = (e) => {
 };
 $("opacity").oninput = (e) => {
   state.opacity = +e.target.value / 100;
-  applyColor();
+  applyOpacity();
 };
 
 // ---- tile math ----

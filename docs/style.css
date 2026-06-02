@@ -166,6 +166,33 @@ select {
   color: var(--accent-2);
   font-weight: 500;
 }
+#metrics-body .stat.ghead {
+  border-bottom: none;
+  padding: 9px 0 2px;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+#metrics-body .stat.ghead:first-child {
+  padding-top: 0;
+}
+#metrics-body .stat span[title] {
+  cursor: help;
+  border-bottom: 1px dotted rgba(255, 255, 255, 0.22);
+}
+#metrics-body .stat.foot {
+  border-bottom: none;
+  padding-top: 8px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--muted);
+}
 #hist {
   margin-top: 10px;
   width: 100%;

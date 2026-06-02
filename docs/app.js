@@ -189,7 +189,6 @@ function applyOpacity() {
 function syncLabels() {
   $("range-label").textContent = `${state.hmin}–${state.hmax} m`;
   $("forest-label").textContent = `${state.forest} m`;
-  $("forest-row").hidden = state.mode !== "forest";
 }
 $("mode").onchange = (e) => {
   state.mode = e.target.value;
@@ -273,22 +272,30 @@ async function computeMetrics() {
   body.className = "muted";
   body.textContent = "Measuring…";
 
-  const counts = new Uint32Array(256);
-  let valid = 0;
+  // Assemble a height mosaic (R channel) of the visible tiles. Gap / edge / rumple metrics
+  // need the spatial layout — a histogram alone can't see structure. Untouched cells stay
+  // 255 (nodata) so ocean / out-of-coverage tiles are excluded from every statistic.
+  const nx = x1 - x0 + 1;
+  const ny = y1 - y0 + 1;
+  const W = nx * 256;
+  const H = ny * 256;
+  const mosaic = new Uint8Array(W * H).fill(255);
+  let any = false;
   for (const [x, y] of tiles) {
     const px = await tilePixels(tz, x, y);
     if (!px) continue;
-    for (let i = 0; i < px.length; i += 4) {
-      const h = px[i]; // R = height (m)
-      if (h > 0) {
-        counts[h]++;
-        valid++;
-      }
+    any = true;
+    const ox = (x - x0) * 256;
+    const oy = (y - y0) * 256;
+    for (let ty = 0; ty < 256; ty++) {
+      let dst = (oy + ty) * W + ox;
+      let src = ty * 256 * 4;
+      for (let tx = 0; tx < 256; tx++, dst++, src += 4) mosaic[dst] = px[src]; // R = height (m)
     }
   }
-  if (!valid) {
+  if (!any) {
     body.className = "muted";
-    body.textContent = "No canopy in view.";
+    body.textContent = "No data tiles in view.";
     hist.hidden = true;
     return;
   }
@@ -296,27 +303,49 @@ async function computeMetrics() {
   const latC = (b.getNorth() + b.getSouth()) / 2;
   const mpp = (156543.03392 * Math.cos((latC * Math.PI) / 180)) / 2 ** tz;
   const pxArea = mpp * mpp; // m² per pixel
-  const lo = state.mode === "forest" ? state.forest : state.hmin;
-  const hi = state.mode === "forest" ? 255 : state.hmax;
-  let inRange = 0;
-  let sum = 0;
-  let max = 0;
-  for (let h = 1; h < 256; h++) {
-    sum += h * counts[h];
-    if (counts[h]) max = h;
-    if (h >= lo && h <= hi) inRange += counts[h];
+  const A = CHMAnalytics.analyzeMosaic(mosaic, W, H, { forestThr: state.forest, mpp });
+  if (!A.canopy) {
+    body.className = "muted";
+    body.textContent = "No canopy in view.";
+    hist.hidden = true;
+    return;
   }
+
+  // Range-slider filter: canopy within the chosen height band (or forest mode's threshold).
+  const counts = A.counts;
+  const lo = state.mode === "forest" ? state.forest : state.hmin;
+  const hi = state.mode === "forest" ? 254 : state.hmax;
+  let inRange = 0;
+  for (let h = lo; h <= hi && h <= 254; h++) inRange += counts[h];
   const areaKm2 = (inRange * pxArea) / 1e6;
-  const cover = (100 * inRange) / valid;
-  const mean = sum / valid;
+  const coverRange = (100 * inRange) / A.observed;
+  const thr = state.forest;
 
   body.className = "";
   body.innerHTML = `
-    <div class="stat"><span>Canopy cover (in range)</span><b>${cover.toFixed(1)}%</b></div>
-    <div class="stat"><span>Area in range</span><b>${areaKm2.toFixed(areaKm2 < 10 ? 2 : 0)} km²</b></div>
-    <div class="stat"><span>Mean height</span><b>${mean.toFixed(1)} m</b></div>
-    <div class="stat"><span>Max height</span><b>${max} m</b></div>`;
+    <div class="stat ghead"><span>View · range ${lo}–${hi} m</span></div>
+    <div class="stat"><span>Cover in range</span><b>${coverRange.toFixed(1)}%</b></div>
+    <div class="stat"><span>Area in range</span><b>${fmtArea(areaKm2 * 1e6)}</b></div>
+    <div class="stat ghead"><span>Canopy height</span></div>
+    <div class="stat"><span>Mean (vegetated)</span><b>${A.mean.toFixed(1)} m</b></div>
+    <div class="stat"><span title="98th pct — robust stand top (GEDI RH98 analogue)">Top height p98</span><b>${A.p.p98} m</b></div>
+    <div class="stat"><span>Max</span><b>${A.max} m</b></div>
+    <div class="stat"><span title="Std-dev of canopy height — structural variability">Rugosity σ</span><b>${A.std.toFixed(1)} m</b></div>
+    <div class="stat ghead"><span>Structure · ≥ ${thr} m</span></div>
+    <div class="stat"><span>Canopy cover</span><b>${A.coverPct.toFixed(1)}%</b></div>
+    <div class="stat"><span title="Canopy 3-D surface area ÷ planar area — 1.0 = flat, higher = rougher">Rumple index</span><b>${A.rumple.toFixed(2)}×</b></div>
+    <div class="stat"><span title="Connected sub-threshold openings in the canopy">Canopy gaps</span><b>${A.gap.count} · ${A.gap.fractionPct.toFixed(0)}%</b></div>
+    <div class="stat"><span>Median / largest gap</span><b>${fmtArea(A.gap.medianM2)} / ${fmtArea(A.gap.largestM2)}</b></div>
+    <div class="stat"><span title="Interior forest (no non-forest 4-neighbour) vs. edge">Core forest</span><b>${A.edge.corePct.toFixed(0)}% · edge ${A.edge.edgePct.toFixed(0)}%</b></div>
+    <div class="stat foot mono"><span>${A.ms.total.toFixed(0)} ms · ${tiles.length} tiles · ${mpp.toFixed(1)} m/px</span></div>`;
   drawHist(counts, lo, hi);
+}
+
+// Format an area in m² as m², ha, or km² for readability.
+function fmtArea(m2) {
+  if (m2 >= 1e6) return `${(m2 / 1e6).toFixed(m2 < 1e7 ? 2 : 0)} km²`;
+  if (m2 >= 1e4) return `${(m2 / 1e4).toFixed(1)} ha`;
+  return `${Math.round(m2)} m²`;
 }
 
 const _bmpCanvas = document.createElement("canvas");

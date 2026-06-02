@@ -65,6 +65,28 @@ function bench(tilesX, tilesY, runs) {
 console.log("CHM analytics benchmark — Node " + process.version);
 bench(4, 4, 30); // typical zoomed-in view
 const med = bench(8, 8, 30); // worst case the app permits (64 tiles)
+
+// AOI polygon clip cost on the worst-case mosaic (a half-area diamond).
+{
+  const { m, w, h } = makeMosaic(8, 8);
+  const cx = w / 2;
+  const cy = h / 2;
+  const r = w * 0.45;
+  const ring = [cx, cy - r, cx + r, cy, cx, cy + r, cx - r, cy];
+  const ts = [];
+  let masked = 0;
+  for (let i = 0; i < 30; i++) {
+    const c = m.slice();
+    const t = Number(process.hrtime.bigint());
+    A.clipToPolygon(c, w, h, ring);
+    ts.push((Number(process.hrtime.bigint()) - t) / 1e6);
+    if (i === 0) for (let k = 0; k < c.length; k++) if (c[k] === 255) masked++;
+  }
+  ts.sort((a, b) => a - b);
+  console.log("\nclipToPolygon (8x8, half-area diamond)");
+  console.log(`  median ${ts[ts.length >> 1].toFixed(1)} ms   masked ${((100 * masked) / (w * h)).toFixed(0)}% -> nodata`);
+}
+
 const BUDGET = 80;
 console.log(`\nworst-case budget: ${BUDGET} ms  ->  ${med <= BUDGET ? "PASS" : "FAIL"} (${med.toFixed(1)} ms)`);
 process.exit(med <= BUDGET ? 0 : 1);

@@ -23,6 +23,8 @@ DOCS = Path(__file__).resolve().parent.parent / "docs"
 
 # Black Forest, DE — dense canopy with real CHM coverage; z12 keeps the view to a few tiles.
 VIEW = {"center": [8.21, 48.27], "zoom": 12}
+# A small polygon inside that view, for the drawn-AOI path.
+AOI_POLY = [[8.19, 48.25], [8.24, 48.25], [8.24, 48.29], [8.19, 48.29]]
 
 # Run the fly-to in the page, then poll the metrics panel until the analytics footer
 # ("<n> ms · ...") appears, signalling a completed compute pass.
@@ -106,3 +108,42 @@ def test_live_structure_metrics(page):
     assert max_m, f"could not parse max from:\n{text}"
     p98, mx = int(p98_m.group(1)), int(max_m.group(1))
     assert 0 < p98 <= mx, f"p98={p98} max={mx}"
+
+
+# Fly to the view at a measurable zoom, set the AOI polygon programmatically (the same code
+# path a drawn polygon takes), and poll until the AOI-scoped metrics compute.
+DRIVE_AOI_JS = """
+async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  for (let i = 0; i < 80 && !window.__setAOI; i++) await sleep(150);
+  if (!window.__setAOI) return { ok: false, text: "no __setAOI hook" };
+  const map = window.__map;
+  await new Promise((res) => {
+    map.once("idle", res);
+    map.jumpTo({ center: [8.215, 48.27], zoom: 13 });
+    setTimeout(res, 8000);
+  });
+  window.__setAOI(__POLY__);
+  const body = document.getElementById("metrics-body");
+  for (let i = 0; i < 120; i++) {
+    const t = body.innerText || "";
+    if (t.includes("AOI") && t.includes("ms \\u00b7")) {
+      return { ok: true, text: t, scope: document.getElementById("scope-label").innerText };
+    }
+    if (/no (canopy|data)/i.test(t)) return { ok: false, text: t };
+    await sleep(250);
+  }
+  return { ok: false, text: "timeout: " + (body.innerText || "") };
+}
+""".replace("__POLY__", json.dumps(AOI_POLY))
+
+
+def test_drawn_aoi_metrics(page):
+    result = page.evaluate(DRIVE_AOI_JS)
+    text = result["text"]
+    assert result["ok"], f"AOI metrics did not compute: {text!r}"
+    assert result["scope"] == "AOI"
+    # scoped header reports the AOI area, and the structure metrics still compute
+    assert re.search(r"AOI · [\d.]+ (m²|ha|km²)", text, re.IGNORECASE), f"no AOI area in:\n{text}"
+    for label in ["Canopy gaps", "Rumple index", "Core forest"]:
+        assert label in text, f"missing {label!r} in:\n{text}"

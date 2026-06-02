@@ -21,6 +21,7 @@ const RAMP = ["#ffe87a", "#ffab4a", "#fb6a63", "#f5359a", "#c81e8c"];
 
 const $ = (id) => document.getElementById(id);
 const state = { mode: "ramp", hmin: 10, hmax: 60, forest: 5, opacity: 0.75 };
+const aoi = { drawing: false, verts: [], ring: null }; // drawn area-of-interest polygon
 
 // ---- maplibre + pmtiles ----
 // MapLibre has no GPU `raster-color`, so we colorize the raw grayscale height tiles
@@ -85,6 +86,7 @@ map.on("load", () => {
   const paint = { "raster-opacity": state.opacity, "raster-resampling": "nearest" };
   map.addLayer({ id: "chm-lo", type: "raster", source: "chm-lo", paint });
   map.addLayer({ id: "chm-hi", type: "raster", source: "chm-hi", paint });
+  setupAOI();
   map.on("moveend", scheduleMetrics);
   scheduleMetrics();
 });
@@ -237,6 +239,30 @@ function tileToQuadkey(x, y, z) {
   }
   return qk;
 }
+// Web-Mercator lon/lat -> absolute pixel at a given zoom (worldpx = 256·2^z), used to map
+// AOI vertices into mosaic pixel space for the polygon clip.
+const lonToWorldPx = (lng, worldpx) => ((lng + 180) / 360) * worldpx;
+const latToWorldPx = (lat, worldpx) => {
+  const s = Math.sin((lat * Math.PI) / 180);
+  return (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * worldpx;
+};
+const viewBounds = () => {
+  const b = map.getBounds();
+  return { w: b.getWest(), s: b.getSouth(), e: b.getEast(), n: b.getNorth() };
+};
+const polyBounds = (verts) => {
+  let w = Infinity;
+  let s = Infinity;
+  let e = -Infinity;
+  let n = -Infinity;
+  for (const [lng, lat] of verts) {
+    if (lng < w) w = lng;
+    if (lng > e) e = lng;
+    if (lat < s) s = lat;
+    if (lat > n) n = lat;
+  }
+  return { w, s, e, n };
+};
 
 // ---- zoom-gated metrics (read actual heights from the data tiles) ----
 let metricsTimer;
@@ -247,25 +273,28 @@ function scheduleMetrics() {
 async function computeMetrics() {
   const z = Math.floor(map.getZoom());
   $("metrics-z").textContent = `z${z}`;
+  $("scope-label").textContent = aoi.ring ? "AOI" : "view";
   const body = $("metrics-body");
   const hist = $("hist");
   if (z < MIN_ANALYSIS_ZOOM) {
     body.className = "muted";
-    body.textContent = `Zoom to ≥ ${MIN_ANALYSIS_ZOOM} to measure the visible canopy.`;
+    body.textContent = `Zoom to ≥ ${MIN_ANALYSIS_ZOOM} to measure the ${aoi.ring ? "AOI" : "visible canopy"}.`;
     hist.hidden = true;
     return;
   }
   const tz = Math.min(z, 14);
-  const b = map.getBounds();
-  const x0 = lon2x(b.getWest(), tz);
-  const x1 = lon2x(b.getEast(), tz);
-  const y0 = lat2y(b.getNorth(), tz);
-  const y1 = lat2y(b.getSouth(), tz);
+  // Analysis extent: a drawn AOI polygon if present, else the current view.
+  const poly = aoi.ring;
+  const bb = poly ? polyBounds(poly) : viewBounds();
+  const x0 = lon2x(bb.w, tz);
+  const x1 = lon2x(bb.e, tz);
+  const y0 = lat2y(bb.n, tz);
+  const y1 = lat2y(bb.s, tz);
   const tiles = [];
   for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) tiles.push([x, y]);
   if (tiles.length > MAX_ANALYSIS_TILES) {
     body.className = "muted";
-    body.textContent = `View spans ${tiles.length} tiles — zoom in a little to measure.`;
+    body.textContent = `${poly ? "AOI" : "View"} spans ${tiles.length} tiles — zoom in${poly ? " or draw a smaller area" : " a little"} to measure.`;
     hist.hidden = true;
     return;
   }
@@ -299,8 +328,18 @@ async function computeMetrics() {
     hist.hidden = true;
     return;
   }
-  // metres per pixel at this zoom + view-centre latitude
-  const latC = (b.getNorth() + b.getSouth()) / 2;
+  // Clip the mosaic to the AOI polygon — pixels outside the ring become 255 (nodata) and so
+  // drop out of every metric. Vertices map to mosaic pixels via the shared Mercator math.
+  if (poly) {
+    const worldpx = 256 * 2 ** tz;
+    const ringPx = [];
+    for (const [lng, lat] of poly) {
+      ringPx.push(lonToWorldPx(lng, worldpx) - x0 * 256, latToWorldPx(lat, worldpx) - y0 * 256);
+    }
+    CHMAnalytics.clipToPolygon(mosaic, W, H, ringPx);
+  }
+  // metres per pixel at this zoom + extent-centre latitude
+  const latC = (bb.n + bb.s) / 2;
   const mpp = (156543.03392 * Math.cos((latC * Math.PI) / 180)) / 2 ** tz;
   const pxArea = mpp * mpp; // m² per pixel
   const A = CHMAnalytics.analyzeMosaic(mosaic, W, H, { forestThr: state.forest, mpp });
@@ -320,10 +359,11 @@ async function computeMetrics() {
   const areaKm2 = (inRange * pxArea) / 1e6;
   const coverRange = (100 * inRange) / A.observed;
   const thr = state.forest;
+  const scope = poly ? `AOI · ${fmtArea(A.observed * pxArea)}` : "View";
 
   body.className = "";
   body.innerHTML = `
-    <div class="stat ghead"><span>View · range ${lo}–${hi} m</span></div>
+    <div class="stat ghead"><span>${scope} · range ${lo}–${hi} m</span></div>
     <div class="stat"><span>Cover in range</span><b>${coverRange.toFixed(1)}%</b></div>
     <div class="stat"><span>Area in range</span><b>${fmtArea(areaKm2 * 1e6)}</b></div>
     <div class="stat ghead"><span>Canopy height</span></div>
@@ -389,11 +429,11 @@ function drawHist(counts, lo, hi) {
 
 // ---- lightweight download: COGs intersecting the current view (z10 quadkeys, no duckdb) ----
 $("export").onclick = () => {
-  const b = map.getBounds();
-  const x0 = lon2x(b.getWest(), 10);
-  const x1 = lon2x(b.getEast(), 10);
-  const y0 = lat2y(b.getNorth(), 10);
-  const y1 = lat2y(b.getSouth(), 10);
+  const bb = aoi.ring ? polyBounds(aoi.ring) : viewBounds();
+  const x0 = lon2x(bb.w, 10);
+  const x1 = lon2x(bb.e, 10);
+  const y0 = lat2y(bb.n, 10);
+  const y1 = lat2y(bb.s, 10);
   const qks = [];
   for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) qks.push(tileToQuadkey(x, y, 10));
   if (qks.length > 400) {
@@ -423,5 +463,135 @@ function toast(msg) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => (t.hidden = true), 2800);
 }
+
+// ---- drawn AOI polygon: click to add vertices, click the first point / double-click to
+// finish, Esc to cancel. Rendered as a maplibre GeoJSON layer; the finished ring restricts
+// every metric to that area (see computeMetrics' clipToPolygon call). ----
+function setupAOI() {
+  map.addSource("aoi", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+  map.addLayer({
+    id: "aoi-fill", type: "fill", source: "aoi", filter: ["==", "$type", "Polygon"],
+    paint: { "fill-color": "#ff5db1", "fill-opacity": 0.12 },
+  });
+  map.addLayer({
+    id: "aoi-outline", type: "line", source: "aoi", filter: ["==", "$type", "Polygon"],
+    paint: { "line-color": "#ff5db1", "line-width": 2 },
+  });
+  map.addLayer({
+    id: "aoi-line", type: "line", source: "aoi", filter: ["==", "$type", "LineString"],
+    paint: { "line-color": "#ff5db1", "line-width": 2, "line-dasharray": [2, 1] },
+  });
+  map.addLayer({
+    id: "aoi-verts", type: "circle", source: "aoi", filter: ["==", "$type", "Point"],
+    paint: {
+      "circle-radius": ["case", ["==", ["get", "first"], true], 6, 4],
+      "circle-color": ["case", ["==", ["get", "first"], true], "#ffffff", "#ff5db1"],
+      "circle-stroke-color": "#ff5db1", "circle-stroke-width": 2,
+    },
+  });
+  map.on("click", onAOIClick);
+  map.on("dblclick", onAOIDblClick);
+  map.on("mousemove", (e) => {
+    if (aoi.drawing && aoi.verts.length) refreshAOI([e.lngLat.lng, e.lngLat.lat]);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && (aoi.drawing || aoi.ring)) clearAOI();
+  });
+}
+
+function closeRing(verts) {
+  const r = verts.slice();
+  const f = r[0];
+  const l = r[r.length - 1];
+  if (r.length && (f[0] !== l[0] || f[1] !== l[1])) r.push(f);
+  return r;
+}
+function aoiData(cursor) {
+  const feats = [];
+  if (aoi.ring) {
+    feats.push({ type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [closeRing(aoi.ring)] } });
+  } else if (aoi.verts.length) {
+    const coords = aoi.verts.slice();
+    if (cursor) coords.push(cursor);
+    if (coords.length >= 2) feats.push({ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: coords } });
+  }
+  (aoi.ring || aoi.verts).forEach((c, i) =>
+    feats.push({ type: "Feature", properties: { first: i === 0 }, geometry: { type: "Point", coordinates: c } }),
+  );
+  return { type: "FeatureCollection", features: feats };
+}
+function refreshAOI(cursor) {
+  const s = map.getSource("aoi");
+  if (s) s.setData(aoiData(cursor));
+}
+function startDraw() {
+  clearAOI(false);
+  aoi.drawing = true;
+  aoi.verts = [];
+  map.getCanvas().style.cursor = "crosshair";
+  map.doubleClickZoom.disable();
+  syncAOIButtons();
+  toast("Click to add points · click the first point or double-click to finish · Esc to cancel");
+}
+function finishDraw() {
+  if (aoi.verts.length < 3) {
+    toast("Need at least 3 points");
+    return;
+  }
+  aoi.ring = aoi.verts.slice();
+  aoi.verts = [];
+  aoi.drawing = false;
+  map.getCanvas().style.cursor = "";
+  map.doubleClickZoom.enable();
+  refreshAOI();
+  syncAOIButtons();
+  scheduleMetrics();
+}
+function clearAOI(recompute = true) {
+  aoi.drawing = false;
+  aoi.verts = [];
+  aoi.ring = null;
+  map.getCanvas().style.cursor = "";
+  map.doubleClickZoom.enable();
+  refreshAOI();
+  syncAOIButtons();
+  if (recompute) scheduleMetrics();
+}
+function onAOIClick(e) {
+  if (!aoi.drawing) return;
+  if (aoi.verts.length >= 3) {
+    const p0 = map.project(aoi.verts[0]);
+    if (Math.hypot(p0.x - e.point.x, p0.y - e.point.y) < 12) {
+      finishDraw();
+      return;
+    }
+  }
+  aoi.verts.push([e.lngLat.lng, e.lngLat.lat]);
+  refreshAOI();
+}
+function onAOIDblClick(e) {
+  if (!aoi.drawing) return;
+  e.preventDefault();
+  if (aoi.verts.length >= 4) aoi.verts.pop(); // drop the duplicate vertex the dblclick added
+  finishDraw();
+}
+function syncAOIButtons() {
+  const draw = $("draw-aoi");
+  const clr = $("clear-aoi");
+  draw.textContent = aoi.drawing ? "✓ Finish" : "▱ Draw AOI";
+  draw.classList.toggle("active", aoi.drawing);
+  clr.hidden = !(aoi.ring || aoi.drawing);
+}
+$("draw-aoi").onclick = () => (aoi.drawing ? finishDraw() : startDraw());
+$("clear-aoi").onclick = () => clearAOI();
+// test / debug hook: set the AOI polygon programmatically from [[lng,lat], ...]
+window.__setAOI = (verts) => {
+  aoi.ring = verts.map((v) => [v[0], v[1]]);
+  aoi.verts = [];
+  aoi.drawing = false;
+  refreshAOI();
+  syncAOIButtons();
+  scheduleMetrics();
+};
 
 syncLabels();

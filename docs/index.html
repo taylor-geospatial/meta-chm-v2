@@ -66,7 +66,11 @@
 
       <section class="metrics" id="metrics">
         <div class="metrics-head">
-          <span>Analysis — view</span><span class="mono" id="metrics-z"></span>
+          <span>Analysis — <span id="scope-label">view</span></span><span class="mono" id="metrics-z"></span>
+        </div>
+        <div class="aoi-controls">
+          <button id="draw-aoi" class="ghost sm">▱ Draw AOI</button>
+          <button id="clear-aoi" class="ghost sm" hidden>Clear</button>
         </div>
         <div id="metrics-body" class="muted">Zoom in to measure the visible canopy.</div>
         <canvas id="hist" width="320" height="90" hidden></canvas>

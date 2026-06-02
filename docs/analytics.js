@@ -170,6 +170,41 @@
     };
   }
 
+  // Clip a height mosaic to a polygon: every pixel OUTSIDE the ring becomes 255 (nodata),
+  // so the existing metrics — which all ignore 255 — operate on just the drawn AOI. No metric
+  // code changes. `ringPx` is a flat [x0,y0,x1,y1,...] vertex list in mosaic pixel coords;
+  // even-odd scanline fill, complementing each row in place (no full-size scratch buffer).
+  function clipToPolygon(heights, w, h, ringPx) {
+    const n = ringPx.length / 2;
+    if (n < 3) return;
+    const xs = [];
+    for (let y = 0; y < h; y++) {
+      const yc = y + 0.5;
+      xs.length = 0;
+      let j = n - 1;
+      for (let i = 0; i < n; i++) {
+        const yi = ringPx[i * 2 + 1];
+        const yj = ringPx[j * 2 + 1];
+        if ((yi > yc) !== (yj > yc)) {
+          const xi = ringPx[i * 2];
+          const xj = ringPx[j * 2];
+          xs.push(xi + ((yc - yi) / (yj - yi)) * (xj - xi));
+        }
+        j = i;
+      }
+      xs.sort((a, b) => a - b);
+      const row = y * w;
+      let x = 0;
+      for (let k = 0; k + 1 < xs.length; k += 2) {
+        const xa = Math.max(0, Math.ceil(xs[k] - 0.5));
+        const xb = Math.min(w - 1, Math.floor(xs[k + 1] - 0.5));
+        for (; x < xa; x++) heights[row + x] = NODATA; // outside, before this span
+        if (xb >= x) x = xb + 1; // keep the inside span untouched
+      }
+      for (; x < w; x++) heights[row + x] = NODATA; // trailing outside
+    }
+  }
+
   // Run the full suite over a mosaic; returns metrics + a per-stage timing breakdown (ms).
   function analyzeMosaic(heights, w, h, opts) {
     const forestThr = opts.forestThr;
@@ -195,5 +230,5 @@
     };
   }
 
-  return { summarize, rumple, gaps, edges, analyzeMosaic, NODATA };
+  return { summarize, rumple, gaps, edges, clipToPolygon, analyzeMosaic, NODATA };
 });

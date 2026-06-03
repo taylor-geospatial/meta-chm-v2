@@ -1,4 +1,7 @@
-"""Build a multiscales VirtualiZarr GeoZarr store from Meta's COGs (zero-copy).
+"""Build a multiscales VirtualiZarr GeoZarr store from the source.coop COGs (zero-copy).
+
+Refs point at the public source.coop mirror (`s3://us-west-2.opendata.source.coop/...`), so
+the store is self-contained — it does not depend on Meta's bucket for chunk bytes.
 
 Per-tile step: fetch ONLY the COG header in a single bulk range GET, then run
 `kerchunk.tiff.tiff_to_zarr` on those bytes locally. kerchunk emits a 7-level Zarr-v2
@@ -31,7 +34,7 @@ import obstore
 import pyarrow.parquet as pq
 from tqdm import tqdm
 
-from . import SRC_BUCKET, SRC_PREFIX
+from . import DST_BUCKET, DST_PREFIX
 from .quadkey import quadkey_to_tile
 
 TILE_PX = 32768
@@ -53,7 +56,7 @@ LEVEL_GLOBAL_PX = [TILE_PX * GLOBAL_TILES_PER_SIDE >> L for L in range(N_LEVELS)
 
 # Module-level per-process singletons. Under spawn the module is re-imported in each
 # worker, so each process gets its own obstore client + memory fs (no fork inheritance).
-_STORE = obstore.store.S3Store(bucket=SRC_BUCKET, region="us-east-1", skip_signature=True)
+_STORE = obstore.store.S3Store(bucket=DST_BUCKET, region="us-west-2", skip_signature=True)
 _MEMFS = fsspec.filesystem("memory")
 
 
@@ -63,7 +66,7 @@ def _kerchunk_reindex(qk: str, min_level: int) -> tuple[str, list[tuple[int, int
     Returns (qk, [(level, gy, gx, offset, length), ...]) for levels >= min_level.
     Runs entirely in a worker process so the GIL-bound tifffile parse parallelizes.
     """
-    key = f"{SRC_PREFIX}/chm/{qk}.tif"
+    key = f"{DST_PREFIX}/chm/{qk}.tif"
     hdr = bytes(obstore.get(_STORE, key, options={"range": (0, HEADER_BYTES)}).bytes())
     mempath = f"/{qk}.tif"
     _MEMFS.pipe(mempath, hdr)
@@ -116,7 +119,7 @@ def build(
         for qk, items in tqdm(
             ex.map(worker, quadkeys, chunksize=32), total=len(quadkeys), desc="kerchunk"
         ):
-            s3url = f"s3://{SRC_BUCKET}/{SRC_PREFIX}/chm/{qk}.tif"
+            s3url = f"s3://{DST_BUCKET}/{DST_PREFIX}/chm/{qk}.tif"
             for level, gy, gx, off, ln in items:
                 entries_per_level[level][(gy, gx)] = (s3url, off, ln)
 
@@ -138,13 +141,14 @@ def build(
 
         shutil.rmtree(out_path)
     storage = icechunk.local_filesystem_storage(str(out_path))
-    # Virtual chunks live in Meta's anonymous us-east-1 bucket; register a container so
-    # Icechunk knows how to resolve `s3://dataforgood-fb-data/...` byte ranges.
-    url_prefix = f"s3://{SRC_BUCKET}/"
+    # Virtual chunks live in the public source.coop bucket (us-west-2); register a container
+    # so Icechunk resolves `s3://us-west-2.opendata.source.coop/...` byte ranges anonymously.
+    # (Self-contained: refs no longer depend on Meta's bucket.)
+    url_prefix = f"s3://{DST_BUCKET}/"
     config = icechunk.RepositoryConfig.default()
     config.set_virtual_chunk_container(
         icechunk.VirtualChunkContainer(
-            url_prefix, icechunk.s3_store(region="us-east-1", anonymous=True)
+            url_prefix, icechunk.s3_store(region="us-west-2", anonymous=True)
         )
     )
     # Icechunk serializes each manifest as a FlatBuffer (capped at 2^31 bytes ≈ ~40M refs).

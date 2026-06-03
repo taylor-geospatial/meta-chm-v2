@@ -6,13 +6,13 @@ from datetime import UTC, datetime
 
 import icechunk as ic
 
-from chm_zarr import SRC_BUCKET
+from chm_zarr import DST_BUCKET
 
 path = sys.argv[1]
-prefix = f"s3://{SRC_BUCKET}/"
+prefix = f"s3://{DST_BUCKET}/"
 cfg = ic.RepositoryConfig.default()
 cfg.set_virtual_chunk_container(
-    ic.VirtualChunkContainer(prefix, ic.s3_store(region="us-east-1", anonymous=True))
+    ic.VirtualChunkContainer(prefix, ic.s3_store(region="us-west-2", anonymous=True))
 )
 repo = ic.Repository.open(
     ic.local_filesystem_storage(path),

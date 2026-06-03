@@ -9,17 +9,17 @@ import pyarrow.parquet as pq
 import rasterio
 import xarray as xr
 
-from chm_zarr import SRC_BUCKET, SRC_PREFIX
+from chm_zarr import DST_BUCKET, DST_PREFIX
 from chm_zarr.quadkey import quadkey_to_tile
 
 store_path = sys.argv[1] if len(sys.argv) > 1 else "out/chm.virtual.icechunk"
 n_probe = int(sys.argv[2]) if len(sys.argv) > 2 else 50
 
-url_prefix = f"s3://{SRC_BUCKET}/"
+url_prefix = f"s3://{DST_BUCKET}/"
 config = icechunk.RepositoryConfig.default()
 config.set_virtual_chunk_container(
     icechunk.VirtualChunkContainer(
-        url_prefix, icechunk.s3_store(region="us-east-1", anonymous=True)
+        url_prefix, icechunk.s3_store(region="us-west-2", anonymous=True)
     )
 )
 repo = icechunk.Repository.open(
@@ -38,7 +38,7 @@ print("level 6 array:", node6.shape, node6.dtype)
 
 quadkeys = pq.read_table("out/tiles.parquet", columns=["quadkey"])["quadkey"].to_pylist()[:n_probe]
 
-rio_env = rasterio.Env(AWS_NO_SIGN_REQUEST="YES", AWS_REGION="us-east-1")
+rio_env = rasterio.Env(AWS_NO_SIGN_REQUEST="YES", AWS_REGION="us-west-2")
 nonzero_checked = 0
 for qk in quadkeys:
     tx, ty, _ = quadkey_to_tile(qk)
@@ -46,7 +46,7 @@ for qk in quadkeys:
     vz_block = node6[y0 : y0 + 512, x0 : x0 + 512].values
 
     # Direct rasterio read of overview level 6 (factor 64) of the same COG
-    with rio_env, rasterio.open(f"s3://{SRC_BUCKET}/{SRC_PREFIX}/chm/{qk}.tif") as ds:
+    with rio_env, rasterio.open(f"s3://{DST_BUCKET}/{DST_PREFIX}/chm/{qk}.tif") as ds:
         # overviews()[5] == factor 64 → the 512x512 IFD; read at that decimated shape
         rio_block = ds.read(1, out_shape=(512, 512))
 

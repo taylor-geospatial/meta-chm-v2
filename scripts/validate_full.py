@@ -8,14 +8,14 @@ import pyarrow.parquet as pq
 import rasterio
 import xarray as xr
 
-from chm_zarr import SRC_BUCKET, SRC_PREFIX
+from chm_zarr import DST_BUCKET, DST_PREFIX
 from chm_zarr.quadkey import quadkey_to_tile
 
 store_path = sys.argv[1]
-prefix = f"s3://{SRC_BUCKET}/"
+prefix = f"s3://{DST_BUCKET}/"
 cfg = icechunk.RepositoryConfig.default()
 cfg.set_virtual_chunk_container(
-    icechunk.VirtualChunkContainer(prefix, icechunk.s3_store(region="us-east-1", anonymous=True))
+    icechunk.VirtualChunkContainer(prefix, icechunk.s3_store(region="us-west-2", anonymous=True))
 )
 repo = icechunk.Repository.open(
     icechunk.local_filesystem_storage(store_path),
@@ -32,7 +32,7 @@ print(
     len(dt.attrs["multiscales"][0]["datasets"]),
 )
 
-rio_env = rasterio.Env(AWS_NO_SIGN_REQUEST="YES", AWS_REGION="us-east-1")
+rio_env = rasterio.Env(AWS_NO_SIGN_REQUEST="YES", AWS_REGION="us-west-2")
 quadkeys = pq.read_table("out/tiles.parquet", columns=["quadkey"])["quadkey"].to_pylist()
 
 
@@ -45,7 +45,10 @@ def check(level, factor, qks, want=3):
         tx, ty, _ = quadkey_to_tile(qk)
         y0, x0 = ty * px, tx * px
         vz = node[y0 : y0 + px, x0 : x0 + px].values
-        with rio_env, rasterio.open(f"s3://{SRC_BUCKET}/{SRC_PREFIX}/chm/{qk}.tif") as ds:
+        with (
+            rio_env,
+            rasterio.open(f"/vsicurl/https://data.source.coop/{DST_PREFIX}/chm/{qk}.tif") as ds,
+        ):
             rio = ds.read(1, out_shape=(px, px))
         if not np.array_equal(vz, rio):
             print(f"  L{level} {qk}: MISMATCH ({int((vz != rio).sum())} px)")

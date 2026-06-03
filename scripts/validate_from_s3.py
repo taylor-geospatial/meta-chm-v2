@@ -9,15 +9,14 @@ import xarray as xr
 
 from chm_zarr.quadkey import quadkey_to_tile
 
-SRC_BUCKET = "dataforgood-fb-data"
-SRC_PREFIX = "forests/v2/global/dinov3_global_chm_v2_ml3"
 DST_BUCKET = "us-west-2.opendata.source.coop"
 ZARR_PREFIX = "tge-labs/meta-chm-v2/zarr/chm.zarr.icechunk"
+COG_PREFIX = "tge-labs/meta-chm-v2/chm"
 
-prefix = f"s3://{SRC_BUCKET}/"
+prefix = f"s3://{DST_BUCKET}/"
 cfg = icechunk.RepositoryConfig.default()
 cfg.set_virtual_chunk_container(
-    icechunk.VirtualChunkContainer(prefix, icechunk.s3_store(region="us-east-1", anonymous=True))
+    icechunk.VirtualChunkContainer(prefix, icechunk.s3_store(region="us-west-2", anonymous=True))
 )
 repo = icechunk.Repository.open(
     icechunk.s3_storage(bucket=DST_BUCKET, prefix=ZARR_PREFIX, region="us-west-2", anonymous=True),
@@ -34,7 +33,7 @@ print(
     len(dt.attrs["multiscales"][0]["datasets"]),
 )
 
-rio_env = rasterio.Env(AWS_NO_SIGN_REQUEST="YES", AWS_REGION="us-east-1")
+rio_env = rasterio.Env(AWS_NO_SIGN_REQUEST="YES", AWS_REGION="us-west-2")
 # Probe a few quadkeys known to have data
 qks = ["0013113332", "0013113333", "0013131013", "0013131031", "0013131033"]
 
@@ -47,7 +46,10 @@ def check(level, factor):
         tx, ty, _ = quadkey_to_tile(qk)
         y0, x0 = ty * px, tx * px
         vz = node[y0 : y0 + px, x0 : x0 + px].values
-        with rio_env, rasterio.open(f"s3://{SRC_BUCKET}/{SRC_PREFIX}/chm/{qk}.tif") as ds:
+        with (
+            rio_env,
+            rasterio.open(f"/vsicurl/https://data.source.coop/{COG_PREFIX}/{qk}.tif") as ds,
+        ):
             rio = ds.read(1, out_shape=(px, px))
         match = np.array_equal(vz, rio)
         if vz.max() > 0:

@@ -1,13 +1,12 @@
 // Meta CHM v2 — serverless canopy-height analysis.
-// One raster source of RAW height (uint8 metres in R, lossless WebP PMTiles on source.coop).
-// maplibre `raster-color` colorizes + thresholds it on the GPU, live from the sliders.
-// Quantitative metrics (cover/area/mean/max/histogram) read the actual tile pixels via the
-// PMTiles JS API — gated behind a zoom so we never scan the whole globe.
+// Reads RAW height (uint8 metres) straight from the cloud-native COGs on source.coop (CORS +
+// range): a global overview COG for z0-9, and the native ~1.19 m per-tile COGs for z10+. A
+// custom `cog://` protocol decodes each tile with geotiff.js and colorizes it through a LUT
+// rebuilt live from the sliders. Metrics read the same COG pixels, gated behind a zoom.
 
-// maplibregl + pmtiles are UMD globals (loaded via <script> in index.html).
-const { PMTiles } = pmtiles;
-
-const PMTILES_URL = "https://data.source.coop/tge-labs/meta-chm-v2/pmtiles/chm_height.pmtiles";
+// maplibregl + GeoTIFF are UMD globals (loaded via <script> in index.html).
+const COG_HTTPS = "https://data.source.coop/tge-labs/meta-chm-v2/chm"; // native per-tile COGs (CORS)
+const OVERVIEW_URL = "https://data.source.coop/tge-labs/meta-chm-v2/overview/chm_overview_z8.tif"; // global z0-9
 const EOX_YEAR = 2024; // Sentinel-2 cloudless mosaic year (EOX::Maps)
 const COG_BASE =
   "https://dataforgood-fb-data.s3.amazonaws.com/forests/v2/global/dinov3_global_chm_v2_ml3/chm";
@@ -58,14 +57,12 @@ function rgbToClass(r, g, b) {
   return best;
 }
 
-// ---- maplibre + pmtiles ----
-// MapLibre has no GPU `raster-color`, so we colorize the raw grayscale height tiles
-// ourselves: a custom `chm://` protocol pulls each tile's bytes from the PMTiles archive,
-// maps height(m) -> RGBA through a lookup table (rebuilt from the sliders), and hands
-// MapLibre a ready-to-draw PNG. PMTiles caches the raw bytes, so recoloring is canvas-only.
-const pm = new PMTiles(PMTILES_URL);
-pm.getHeader(); // warm header + root directory before the first tile request
-maplibregl.addProtocol("chm", chmProtocol);
+// ---- client-side COG rendering ----
+// A custom `cog://` protocol reads each map tile straight from the source.coop COGs with
+// geotiff.js (range reads), maps height(m) -> RGBA through a LUT (rebuilt from the sliders),
+// and hands MapLibre a ready-decoded ImageBitmap. Per-COG headers are cached, so once a COG
+// is open its tiles decode in ~5 ms.
+maplibregl.addProtocol("cog", cogProtocol);
 
 // Sentinel-2 cloudless basemap (EOX::Maps) as an inline raster style — no external
 // style.json dependency, and gives the canopy a real-world satellite backdrop.
@@ -108,14 +105,15 @@ map.on("error", (e) => {
   toast(msg);
 });
 
-// One PMTiles archive (z0-8 overview + z10-14 detail), drawn as two raster layers so
-// maplibre overzooms the z8 overview to fill z9 (no gap) and the crisp z10-14 takes over.
+// Two raster layers off the `cog://` protocol: the global overview COG drives z0-8 (maplibre
+// overzooms it to fill z9), then the native per-tile COGs take over for z10-14.
 const CHM_LAYERS = ["chm-lo", "chm-hi"];
 let colorVer = 0; // bumped to bust maplibre's tile cache when the colormap changes
-const chmTiles = () => [`chm://{z}/{x}/{y}?v=${colorVer}`];
+const chmTiles = () => [`cog://{z}/{x}/{y}?v=${colorVer}`];
 
 map.on("load", () => {
   rebuildLUT();
+  openCog(OVERVIEW_URL).catch(() => {}); // warm the global overview header before first paint
   map.addSource("chm-lo", { type: "raster", tiles: chmTiles(), tileSize: 256, minzoom: 0, maxzoom: 8 });
   map.addSource("chm-hi", { type: "raster", tiles: chmTiles(), tileSize: 256, minzoom: 10, maxzoom: 14 });
   const paint = { "raster-opacity": state.opacity, "raster-resampling": "nearest" };
@@ -181,28 +179,85 @@ function rebuildLUT() {
   }
 }
 
-// Custom protocol: pull a tile from the PMTiles archive, recolor through the LUT -> PNG.
-const _oc = new OffscreenCanvas(256, 256);
-const _ocx = _oc.getContext("2d", { willReadFrequently: true });
-async function chmProtocol(params) {
-  const m = params.url.match(/chm:\/\/(\d+)\/(\d+)\/(\d+)/);
-  if (!m) return { data: await emptyTile() };
-  const r = await pm.getZxy(+m[1], +m[2], +m[3]);
-  if (!r) return { data: await emptyTile() }; // ocean / out-of-coverage tile
-  const bmp = await createImageBitmap(new Blob([r.data], { type: "image/webp" }));
-  _ocx.drawImage(bmp, 0, 0, 256, 256);
-  bmp.close();
-  const img = _ocx.getImageData(0, 0, 256, 256);
-  const d = img.data;
-  for (let i = 0; i < d.length; i += 4) {
-    const o = d[i] * 4; // R channel = height in metres
-    d[i] = LUT[o];
-    d[i + 1] = LUT[o + 1];
-    d[i + 2] = LUT[o + 2];
-    d[i + 3] = LUT[o + 3];
+// Open + cache one COG per URL. We list its image-pyramid levels (skipping the interleaved
+// internal-mask IFDs, PhotometricInterpretation === 4 — selecting one would render garbage),
+// ordered full-res first. Header parse is the only slow part and happens once per COG.
+const cogCache = new Map(); // url -> Promise<{tiff, levels:[{idx,width}], imgs}>
+function openCog(url) {
+  let p = cogCache.get(url);
+  if (!p) {
+    p = (async () => {
+      const tiff = await GeoTIFF.fromUrl(url);
+      const n = await tiff.getImageCount();
+      const levels = [];
+      const imgs = {};
+      for (let i = 0; i < n; i++) {
+        const im = await tiff.getImage(i);
+        imgs[i] = im;
+        if (im.fileDirectory.PhotometricInterpretation !== 4) levels.push({ idx: i, width: im.getWidth() });
+      }
+      levels.sort((a, b) => b.width - a.width); // [full, ...coarser]
+      return { tiff, levels, imgs };
+    })();
+    cogCache.set(url, p);
   }
-  // Hand maplibre a ready-decoded ImageBitmap — skips the PNG re-encode here AND maplibre's
-  // re-decode on the other side (2 fewer codec passes per tile vs. round-tripping a Blob).
+  return p;
+}
+
+// Read a 256x256 block of RAW height for web tile z/x/y from the right COG + overview level
+// (so each tile is ~one internal block read). Returns Uint8Array(65536) or null off-coverage.
+async function cogReadR(z, x, y) {
+  const overview = z <= 9;
+  let url;
+  let target; // pyramid level: 0 = full-res, higher = coarser
+  let s10 = 1;
+  if (overview) {
+    url = OVERVIEW_URL;
+    target = 8 - z; // overview COG full-res is z8 (global)
+  } else {
+    s10 = 1 << (z - 10);
+    url = `${COG_HTTPS}/${tileToQuadkey(Math.floor(x / s10), Math.floor(y / s10), 10)}.tif`;
+    target = 17 - z; // native COG full-res is z17 of its z10 tile
+  }
+  let c;
+  try {
+    c = await openCog(url);
+  } catch {
+    return null; // ocean / missing tile -> 404
+  }
+  const L = c.levels[Math.min(Math.max(target, 0), c.levels.length - 1)];
+  const side = overview ? L.width / 2 ** z : L.width / s10; // full-res px per web tile at this level
+  const px = overview ? x * side : (x % s10) * side;
+  const py = overview ? y * side : (y % s10) * side;
+  try {
+    const bands = await c.imgs[L.idx].readRasters({
+      window: [Math.round(px), Math.round(py), Math.round(px + side), Math.round(py + side)],
+      width: 256,
+      height: 256,
+      resampleMethod: "nearest",
+      fillValue: 0,
+    });
+    return bands[0]; // 1-band height
+  } catch {
+    return null;
+  }
+}
+
+// Custom protocol: read height from the COG, colorize through the LUT -> ImageBitmap.
+async function cogProtocol(params) {
+  const m = params.url.match(/cog:\/\/(\d+)\/(\d+)\/(\d+)/);
+  if (!m) return { data: await emptyTile() };
+  const R = await cogReadR(+m[1], +m[2], +m[3]);
+  if (!R) return { data: await emptyTile() };
+  const img = new ImageData(256, 256);
+  const d = img.data;
+  for (let i = 0, p = 0; i < R.length; i++, p += 4) {
+    const o = R[i] * 4; // height (m) -> rgba via LUT
+    d[p] = LUT[o];
+    d[p + 1] = LUT[o + 1];
+    d[p + 2] = LUT[o + 2];
+    d[p + 3] = LUT[o + 3];
+  }
   return { data: await createImageBitmap(img) };
 }
 function emptyTile() {
@@ -366,8 +421,8 @@ async function computeMetrics() {
     const oy = (y - y0) * 256;
     for (let ty = 0; ty < 256; ty++) {
       let dst = (oy + ty) * W + ox;
-      let src = ty * 256 * 4;
-      for (let tx = 0; tx < 256; tx++, dst++, src += 4) mosaic[dst] = px[src]; // R = height (m)
+      let src = ty * 256;
+      for (let tx = 0; tx < 256; tx++, dst++, src++) mosaic[dst] = px[src]; // R = height (m)
     }
   }
   if (!any) {
@@ -474,20 +529,9 @@ function fmtArea(m2) {
   return `${Math.round(m2)} m²`;
 }
 
-const _bmpCanvas = document.createElement("canvas");
-_bmpCanvas.width = _bmpCanvas.height = 256;
-const _bmpCtx = _bmpCanvas.getContext("2d", { willReadFrequently: true });
+// Metrics read the same COG height pixels as the renderer (R = height m), gated to z>=11.
 async function tilePixels(z, x, y) {
-  try {
-    const r = await pm.getZxy(z, x, y);
-    if (!r) return null;
-    const bmp = await createImageBitmap(new Blob([r.data], { type: "image/webp" }));
-    _bmpCtx.clearRect(0, 0, 256, 256);
-    _bmpCtx.drawImage(bmp, 0, 0);
-    return _bmpCtx.getImageData(0, 0, 256, 256).data;
-  } catch {
-    return null;
-  }
+  return cogReadR(z, x, y); // Uint8Array(65536) of height, or null
 }
 
 const _wcCanvas = document.createElement("canvas");

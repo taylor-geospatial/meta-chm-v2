@@ -165,20 +165,25 @@ async () => {
   cb.checked = true;
   cb.dispatchEvent(new Event("change"));
   const body = document.getElementById("metrics-body");
+  const toast = () => document.getElementById("toast").textContent || "";
   for (let i = 0; i < 160; i++) {
     const t = body.innerText || "";
     const lc = t.toLowerCase();
     if (lc.includes("tree cover") && lc.includes("trees only")) return { ok: true, text: t };
-    if (/no canopy/i.test(t)) return { ok: false, text: t };
+    if (/no canopy/i.test(t)) return { ok: false, text: t, toast: toast() };
     await sleep(250);
   }
-  return { ok: false, text: "timeout: " + (body.innerText || "") };
+  return { ok: false, text: "timeout: " + (body.innerText || ""), toast: toast() };
 }
 """
 
 
 def test_worldcover_forest_mask(page):
     result = page.evaluate(DRIVE_MASK_JS)
+    # WorldCover comes from a third-party WMTS (Terrascope). If it's unreachable the app falls
+    # back to unmasked metrics + a toast — skip rather than fail the suite on a 3rd-party flake.
+    if not result["ok"] and "unavailable" in (result.get("toast") or "").lower():
+        pytest.skip("WorldCover (Terrascope WMTS) unreachable this run")
     text = result["text"]
     assert result["ok"], f"forest mask did not compute: {text!r}"
     # tree-cover percentage parses and is a sane fraction

@@ -1,0 +1,16 @@
+{
+  "name": "meta-chm-v2-webapp",
+  "version": "0.1.0",
+  "description": "Serverless canopy-height viewer for Meta CHM v2 — streams cloud-native COGs, colorizes + measures live in the browser.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun ./index.html",
+    "build": "rm -rf dist && bun build ./index.html --outdir ./dist --minify --target browser --public-path ./ && cp public/.nojekyll dist/.nojekyll",
+    "bench": "bun bench/analytics.bench.mjs",
+    "test": "bun bench/analytics.bench.mjs"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  }
+}

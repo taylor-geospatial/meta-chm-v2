@@ -7,7 +7,7 @@ copying the ~24 TB of source rasters.
 **Live analysis map:** <https://research.taylorgeospatial.org/meta-chm-v2/> — a fully
 static (serverless) viewer: raw canopy height streamed as PMTiles over an EOX Sentinel-2
 basemap, colorized and measured live in the browser (height thresholds, classes, forest
-mask, per-view forest metrics) with no server. Source in [`docs/`](docs/).
+mask, per-view forest metrics) with no server. Source in [`app/`](app/) — see [`app/README.md`](app/README.md) for dev/build.
 
 The source dataset (`s3://dataforgood-fb-data/forests/v2/global/dinov3_global_chm_v2_ml3/`)
 is 213,109 Web-Mercator COG tiles plus a 56 MB `tiles.geojson` and 208k tiny per-tile

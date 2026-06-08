@@ -27,6 +27,10 @@ import multiprocessing as mp
 import time
 from functools import partial
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    import zarr
 
 import fsspec
 import kerchunk.tiff
@@ -86,6 +90,58 @@ def _kerchunk_reindex(qk: str, min_level: int) -> tuple[str, list[tuple[int, int
                 if isinstance(ref, list) and len(ref) == 3:
                     out.append((level, gy0 + r, gx0 + c, int(ref[1]), int(ref[2])))
     return qk, out
+
+
+def _geotransform(n_px: int) -> str:
+    """GDAL GeoTransform for a global EPSG:3857 grid `n_px` wide: origin top-left, square pixels."""
+    pix = 2 * R_MERC / n_px
+    return f"{-R_MERC} {pix} 0.0 {R_MERC} 0.0 {-pix}"
+
+
+def apply_geozarr_metadata(root: "zarr.Group", levels: list[int]) -> None:
+    """Write the three GeoZarr conventions SEPARATELY (not conflated):
+      - multiscales: a root attr listing overview group paths, coarsest->finest (paths only).
+      - CRS (proj/CF): per-level `spatial_ref` grid_mapping aux variable (crs_wkt + proj:code).
+      - spatial transform: a GDAL `GeoTransform` string on that same aux variable.
+    Each `chm` array references its `spatial_ref` via the CF `grid_mapping` attribute.
+    Group `L` holds the 2**L-times-downscaled overview of the native 1.19 m grid.
+    """
+    from pyproj import CRS
+
+    wkt = CRS.from_epsg(3857).to_wkt()
+    root.attrs["Conventions"] = "CF-1.10"
+    root.attrs["title"] = "Meta CHM v2 ml3 — canopy height (multiscale GeoZarr)"
+    # multiscales convention only — paths to the overview groups, coarsest first.
+    root.attrs["multiscales"] = [
+        {
+            "name": "chm",
+            "datasets": [
+                {"path": str(L), "downscale_factor": 2**L} for L in sorted(levels, reverse=True)
+            ],
+            "type": "average",
+        }
+    ]
+    for L in levels:
+        # zarr's Group.__getitem__ returns an untyped union; cast so the checker sees Group/Array.
+        g = cast("zarr.Group", root[str(L)])
+        chm = cast("zarr.Array", g["chm"])
+        chm.attrs["_ARRAY_DIMENSIONS"] = ["y", "x"]
+        chm.attrs["standard_name"] = "canopy_height"
+        chm.attrs["long_name"] = "tree canopy height"
+        chm.attrs["units"] = "m"
+        chm.attrs["grid_mapping"] = "spatial_ref"  # CF: point at the CRS aux variable
+        if "spatial_ref" in g:
+            sr = cast("zarr.Array", g["spatial_ref"])
+        else:
+            sr = g.create_array("spatial_ref", shape=(), dtype="int32", fill_value=0)
+        sr[...] = 0
+        sr.attrs["_ARRAY_DIMENSIONS"] = []
+        sr.attrs["grid_mapping_name"] = "mercator"
+        sr.attrs["crs_wkt"] = wkt
+        sr.attrs["spatial_ref"] = wkt  # GDAL/rioxarray compatibility
+        sr.attrs["proj:code"] = "EPSG:3857"
+        sr.attrs["proj:epsg"] = 3857
+        sr.attrs["GeoTransform"] = _geotransform(LEVEL_GLOBAL_PX[L])
 
 
 def build(
@@ -171,39 +227,17 @@ def build(
         ),
     )
 
-    # --- 1) Create the GeoZarr structure (group + per-level arrays + multiscales attrs) ---
+    # --- 1) Create the GeoZarr structure (group + per-level arrays) + GeoZarr metadata ---
     # Source COG tiles are DEFLATE/zlib compressed (no predictor/filters, per kerchunk);
     # declare the matching codec so reads decompress. Each level is its own group node
-    # (GeoZarr multiscales = a group hierarchy; levels have different y/x sizes).
+    # (different y/x sizes); GeoZarr metadata (multiscales / CRS / GeoTransform) is applied
+    # by apply_geozarr_metadata as three separate conventions.
     session = repo.writable_session("main")
     root = zarr.group(store=session.store, overwrite=True)
-    root.attrs["Conventions"] = "CF-1.10"
-    root.attrs["title"] = "Meta CHM v2 ml3 (virtual, multiscales)"
-    root.attrs["geozarr_spec_version"] = "0.4"
-    root.attrs["multiscales"] = [
-        {
-            "name": "chm",
-            "axes": [
-                {"name": "y", "type": "space", "unit": "meter"},
-                {"name": "x", "type": "space", "unit": "meter"},
-            ],
-            "datasets": [
-                {
-                    "path": f"{L}/chm",
-                    "coordinateTransformations": [
-                        {"type": "scale", "scale": [2 * R_MERC / LEVEL_GLOBAL_PX[L]] * 2}
-                    ],
-                }
-                for L in levels
-            ],
-            "type": "average",
-            "metadata": {"crs": "EPSG:3857", "description": "from COG IFD overviews"},
-        }
-    ]
     for L in levels:
         n_px = LEVEL_GLOBAL_PX[L]
         g = root.create_group(str(L))
-        arr = g.create_array(
+        g.create_array(
             "chm",
             shape=(n_px, n_px),
             chunks=(BLOCK_PX, BLOCK_PX),
@@ -213,8 +247,8 @@ def build(
             compressors=[Zlib()],
             dimension_names=("y", "x"),
         )
-        arr.attrs["_ARRAY_DIMENSIONS"] = ["y", "x"]
-    structure_snap = session.commit("geozarr structure (groups + arrays + multiscales)")
+    apply_geozarr_metadata(root, levels)
+    structure_snap = session.commit("geozarr structure (groups + arrays + GeoZarr metadata)")
     print(f"structure committed: {structure_snap}")
 
     # --- 2) Stream virtual chunk refs per level in <50M-ref batches, committing each ---

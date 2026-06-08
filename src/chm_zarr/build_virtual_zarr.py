@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 
 import fsspec
 import kerchunk.tiff
+import numpy as np
 import obstore
 import pyarrow.parquet as pq
 from tqdm import tqdm
@@ -64,11 +65,12 @@ _STORE = obstore.store.S3Store(bucket=DST_BUCKET, region="us-west-2", skip_signa
 _MEMFS = fsspec.filesystem("memory")
 
 
-def _kerchunk_reindex(qk: str, min_level: int) -> tuple[str, list[tuple[int, int, int, int, int]]]:
+def _kerchunk_reindex(qk: str, min_level: int) -> "tuple[str, np.ndarray]":
     """Worker: GET header → kerchunk → re-key chunks to global indices.
 
-    Returns (qk, [(level, gy, gx, offset, length), ...]) for levels >= min_level.
-    Runs entirely in a worker process so the GIL-bound tifffile parse parallelizes.
+    Returns (qk, int64 array of shape (N, 5): columns [level, gy, gx, offset, length]) for
+    levels >= min_level. Runs in a worker process so the GIL-bound tifffile parse parallelizes;
+    the compact array keeps the pickled result — and the parent's accumulated RAM — small.
     """
     key = f"{DST_PREFIX}/chm/{qk}.tif"
     hdr = bytes(obstore.get(_STORE, key, options={"range": (0, HEADER_BYTES)}).bytes())
@@ -80,7 +82,7 @@ def _kerchunk_reindex(qk: str, min_level: int) -> tuple[str, list[tuple[int, int
         _MEMFS.rm(mempath)
 
     tx, ty, _ = quadkey_to_tile(qk)
-    out: list[tuple[int, int, int, int, int]] = []
+    rows: list[tuple[int, int, int, int, int]] = []
     for level in range(min_level, N_LEVELS):
         b = LEVEL_BLOCKS_PER_TILE[level]
         gy0, gx0 = ty * b, tx * b
@@ -88,8 +90,15 @@ def _kerchunk_reindex(qk: str, min_level: int) -> tuple[str, list[tuple[int, int
             for c in range(b):
                 ref = refs.get(f"{level}/{r}.{c}")
                 if isinstance(ref, list) and len(ref) == 3:
-                    out.append((level, gy0 + r, gx0 + c, int(ref[1]), int(ref[2])))
-    return qk, out
+                    rows.append((level, gy0 + r, gx0 + c, int(ref[1]), int(ref[2])))
+    return qk, np.array(rows, dtype=np.int64).reshape(-1, 5)
+
+
+def level_name(level: int) -> str:
+    """Multiscale group name = downscale factor from native: level 0 -> '1x' (native 1.19 m),
+    level 1 -> '2x', ... level 6 -> '64x'. (GeoZarr only requires multiscales to point at the
+    path; this naming states each level's resolution directly.)"""
+    return f"{1 << level}x"
 
 
 def _geotransform(n_px: int) -> str:
@@ -116,14 +125,15 @@ def apply_geozarr_metadata(root: "zarr.Group", levels: list[int]) -> None:
         {
             "name": "chm",
             "datasets": [
-                {"path": str(L), "downscale_factor": 2**L} for L in sorted(levels, reverse=True)
+                {"path": level_name(L), "downscale_factor": 1 << L}
+                for L in sorted(levels, reverse=True)
             ],
             "type": "average",
         }
     ]
     for L in levels:
         # zarr's Group.__getitem__ returns an untyped union; cast so the checker sees Group/Array.
-        g = cast("zarr.Group", root[str(L)])
+        g = cast("zarr.Group", root[level_name(L)])
         chm = cast("zarr.Array", g["chm"])
         chm.attrs["_ARRAY_DIMENSIONS"] = ["y", "x"]
         chm.attrs["standard_name"] = "canopy_height"
@@ -156,35 +166,30 @@ def build(
         quadkeys = quadkeys[:limit]
     print(f"{len(quadkeys):,} COGs to kerchunk → multiscales virtual Zarr")
 
-    # Per-level dense ChunkManifest alloc (paths StringDType + 2 uint64 ≈ 32 bytes/cell):
-    # L6≈0.03GB, L5≈0.1, L4≈0.4, L3≈1.6, L2≈8.6, L1≈34, L0≈137 GB.
-    # min_level=1 (default) skips the 137GB native level; min_level=0 needs a 512GB/2TB node.
-    levels_to_build = list(range(min_level, N_LEVELS))
-    print(f"building levels {levels_to_build} (min_level={min_level})")
+    # min_level=0 includes native (1.19 m, ~872M refs); min_level=1 starts at the 2x overview.
+    levels = list(range(min_level, N_LEVELS))
+    print(f"building levels {levels} -> groups {[level_name(L) for L in levels]}")
 
-    # Accumulate SPARSE entries dicts per level: {(gy,gx): (path, offset, length)}.
-    # Only populated chunks are stored; missing chunks stay absent (Zarr returns fill_value).
-    entries_per_level: dict[int, dict[tuple[int, int], tuple[str, int, int]]] = {
-        L: {} for L in levels_to_build
-    }
-
+    # Accumulate ONE compact int64 array per tile (cols: level, gy, gx, off, len). Far smaller
+    # than dicts of Python tuples — ~50 GB for all levels incl. native — so it fits a normal
+    # 256 GB node instead of needing a 512 GB/2 TB box.
+    tiles: list[tuple[str, np.ndarray]] = []
     t0 = time.time()
     ctx = mp.get_context("spawn")
     worker = partial(_kerchunk_reindex, min_level=min_level)
     with cf.ProcessPoolExecutor(max_workers=workers, mp_context=ctx) as ex:
-        for qk, items in tqdm(
+        for qk, arr in tqdm(
             ex.map(worker, quadkeys, chunksize=32), total=len(quadkeys), desc="kerchunk"
         ):
-            s3url = f"s3://{DST_BUCKET}/{DST_PREFIX}/chm/{qk}.tif"
-            for level, gy, gx, off, ln in items:
-                entries_per_level[level][(gy, gx)] = (s3url, off, ln)
+            if len(arr):
+                tiles.append((qk, arr))
 
-    n_chunks = sum(len(d) for d in entries_per_level.values())
-    print(f"kerchunk pass: {time.time() - t0:.1f}s, {n_chunks:,} chunks")
-
-    levels = [L for L in levels_to_build if entries_per_level[L]]
-    if not levels:
-        raise RuntimeError("no levels built — nothing to write")
+    n_chunks = sum(len(a) for _, a in tiles)
+    print(
+        f"kerchunk pass: {time.time() - t0:.1f}s, {n_chunks:,} chunks across {len(tiles):,} tiles"
+    )
+    if not tiles:
+        raise RuntimeError("no chunks parsed — nothing to write")
 
     import icechunk
     import zarr
@@ -236,7 +241,7 @@ def build(
     root = zarr.group(store=session.store, overwrite=True)
     for L in levels:
         n_px = LEVEL_GLOBAL_PX[L]
-        g = root.create_group(str(L))
+        g = root.create_group(level_name(L))
         g.create_array(
             "chm",
             shape=(n_px, n_px),
@@ -257,27 +262,31 @@ def build(
     # stored manifests; we also batch commits at 20M (verified safe) to bound the change-set.
     BATCH = 20_000_000
     for L in levels:
-        arr_path = f"/{L}/chm"
-        entries = entries_per_level[L]
-        total = len(entries)
+        arr_path = f"/{level_name(L)}/chm"
         written = 0
         batch: list[icechunk.VirtualChunkSpec] = []
         session = repo.writable_session("main")
-        for (gy, gx), (loc, off, ln) in entries.items():
-            batch.append(
-                icechunk.VirtualChunkSpec(index=[gy, gx], location=loc, offset=off, length=ln)
-            )
-            if len(batch) >= BATCH:
-                session.store.set_virtual_refs(arr_path, batch, validate_containers=False)
-                written += len(batch)
-                session.commit(f"L{L} virtual refs {written:,}/{total:,}")
-                session = repo.writable_session("main")
-                batch = []
+        for qk, arr in tiles:
+            sel = arr[arr[:, 0] == L]
+            if not len(sel):
+                continue
+            loc = f"s3://{DST_BUCKET}/{DST_PREFIX}/chm/{qk}.tif"
+            for gy, gx, off, ln in sel[:, 1:].tolist():
+                batch.append(
+                    icechunk.VirtualChunkSpec(index=[gy, gx], location=loc, offset=off, length=ln)
+                )
+                if len(batch) >= BATCH:
+                    session.store.set_virtual_refs(arr_path, batch, validate_containers=False)
+                    written += len(batch)
+                    session.commit(f"{level_name(L)} virtual refs {written:,}")
+                    session = repo.writable_session("main")
+                    batch = []
         if batch:
             session.store.set_virtual_refs(arr_path, batch, validate_containers=False)
             written += len(batch)
-            session.commit(f"L{L} virtual refs {written:,}/{total:,}")
-        entries_per_level[L] = {}  # free as we go
-        print(f"level {L}: wrote {written:,} virtual refs (shape {LEVEL_GLOBAL_PX[L]} sq)")
+            session.commit(f"{level_name(L)} virtual refs {written:,}")
+        print(
+            f"level {level_name(L)}: wrote {written:,} virtual refs (shape {LEVEL_GLOBAL_PX[L]} sq)"
+        )
 
     print(f"done → {out_path}")

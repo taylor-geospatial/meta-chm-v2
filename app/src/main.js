@@ -124,6 +124,16 @@ function rebuildLUT() {
   }
 }
 
+// Raw decoded heights, keyed by tile (z/x/y). The pixels never change — only the LUT —
+// so recoloring (slider drags) reuses these and re-runs just the cheap colorize loop
+// instead of re-decoding every visible tile. Bounded FIFO; metrics + render share it.
+const rasterCache = new Map();
+const RASTER_CACHE_MAX = 384;
+function cacheRaster(key, val) {
+  rasterCache.set(key, val);
+  if (rasterCache.size > RASTER_CACHE_MAX) rasterCache.delete(rasterCache.keys().next().value);
+}
+
 const cogCache = new Map();
 function openCog(url) {
   let p = cogCache.get(url);
@@ -147,6 +157,14 @@ function openCog(url) {
 }
 
 async function cogReadR(z, x, y) {
+  const key = `${z}/${x}/${y}`;
+  if (rasterCache.has(key)) return rasterCache.get(key);
+  const r = await cogDecodeR(z, x, y);
+  cacheRaster(key, r); // cache misses too (null = no tile) — static dataset, don't refetch
+  return r;
+}
+
+async function cogDecodeR(z, x, y) {
   const overview = z <= 9;
   let url;
   let target;
@@ -183,11 +201,19 @@ async function cogReadR(z, x, y) {
   }
 }
 
+// Lightweight, zero-cost-when-off perf hook: window.__perf.on = true records a
+// per-tile {read, color, bitmap} ms breakdown so we can see where a frame goes.
+const perf = { on: false, rec: [] };
+window.__perf = perf;
+window.__perfReset = () => (perf.rec.length = 0);
+
 async function cogProtocol(params) {
   const m = params.url.match(/cog:\/\/(\d+)\/(\d+)\/(\d+)/);
   if (!m) return { data: await emptyTile() };
+  const t0 = perf.on ? performance.now() : 0;
   const R = await cogReadR(+m[1], +m[2], +m[3]);
   if (!R) return { data: await emptyTile() };
+  const t1 = perf.on ? performance.now() : 0;
   const img = new ImageData(256, 256);
   const d = img.data;
   for (let i = 0, p = 0; i < R.length; i++, p += 4) {
@@ -197,7 +223,10 @@ async function cogProtocol(params) {
     d[p + 2] = LUT[o + 2];
     d[p + 3] = LUT[o + 3];
   }
-  return { data: await createImageBitmap(img) };
+  const t2 = perf.on ? performance.now() : 0;
+  const data = await createImageBitmap(img);
+  if (perf.on) perf.rec.push({ z: +m[1], read: t1 - t0, color: t2 - t1, bitmap: performance.now() - t2 });
+  return { data };
 }
 function emptyTile() {
   return createImageBitmap(new ImageData(256, 256));
@@ -334,11 +363,14 @@ async function computeMetrics() {
   const W = nx * 256;
   const H = ny * 256;
   const mosaic = new Uint8Array(W * H).fill(255);
+  // Read every tile concurrently (cache hits are instant; cold reads overlap network latency).
+  const reads = await Promise.all(tiles.map(([x, y]) => tilePixels(tz, x, y)));
   let any = false;
-  for (const [x, y] of tiles) {
-    const px = await tilePixels(tz, x, y);
+  for (let i = 0; i < tiles.length; i++) {
+    const px = reads[i];
     if (!px) continue;
     any = true;
+    const [x, y] = tiles[i];
     const ox = (x - x0) * 256;
     const oy = (y - y0) * 256;
     for (let ty = 0; ty < 256; ty++) {

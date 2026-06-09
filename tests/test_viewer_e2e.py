@@ -1,8 +1,9 @@
 """End-to-end browser test for the canopy-height viewer.
 
-Serves docs/ over a local HTTP server, drives the real app with Playwright
-(SwiftShader WebGL so MapLibre runs headless), flies to a forested view, and
-asserts the forest-structure analytics compute from live source.coop tiles.
+Serves app/ over a local HTTP server (native ES modules — no build step), drives
+the real app with Playwright (SwiftShader WebGL so MapLibre runs headless), flies
+to a forested view, and asserts the forest-structure analytics compute from live
+source.coop tiles.
 
 Requires network (source.coop + EOX) and a Playwright Chromium build:
     uv run playwright install chromium
@@ -19,7 +20,7 @@ from pathlib import Path
 import pytest
 from playwright.sync_api import sync_playwright
 
-DOCS = Path(__file__).resolve().parent.parent / "docs"
+APP = Path(__file__).resolve().parent.parent / "app"
 
 # Black Forest, DE — dense canopy with real CHM coverage; z12 keeps the view to a few tiles.
 VIEW = {"center": [8.21, 48.27], "zoom": 12}
@@ -53,7 +54,7 @@ async () => {
 
 @pytest.fixture(scope="module")
 def app_url():
-    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(DOCS))
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(APP))
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

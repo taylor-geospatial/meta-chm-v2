@@ -1,39 +1,44 @@
-# Meta CHM v2 (ml3) — Cloud-Native Companion
+# Meta CHM v2 (ml3) — Cloud-Native
 
 A cloud-native repackaging of Meta's **DINOv3 Global Canopy Height Map v2 (ml3)**:
-a global ~1.19 m canopy-height raster (213,109 Web-Mercator tiles, ~23.8 TB of COGs).
+a global ~1.19 m canopy-height raster (213,109 Web-Mercator tiles).
 
-This package does **not** copy the 23.8 TB of pixels. Instead it adds the three
-things the original distribution lacks for streaming + analysis, and references
-Meta's COGs in place:
+Everything lives in this one bucket with CORS + HTTP range support, so it streams directly
+to browsers and analysis tools — no credentials, no second host:
 
 ```
-s3://us-west-2.opendata.source.coop/tge-labs/meta-chm-v2/
+s3://us-west-2.opendata.source.coop/tge-labs/meta-chm-v2/   (https://data.source.coop/tge-labs/meta-chm-v2/)
+├── chm/                     # 213,109 COGs — uint8 metres, EPSG:3857, ~23.8 TB (CORS mirror of Meta's)
+├── overview/
+│   └── chm_overview_z8.tif  # single global overview COG (z0–9) for fast world / low-zoom views
 ├── tiles.parquet            # GeoParquet 1.1 tile index (213,109 rows, bbox-indexed)
+├── acq_dates.parquet        # per-tile source acquisition window (start / end / count)
 ├── stac/
 │   ├── collection.json      # STAC Collection (CC-BY-4.0)
-│   ├── items.parquet        # stac-geoparquet — one Item per tile, assets → Meta's S3
+│   ├── items.parquet        # stac-geoparquet — one Item per tile, assets → this bucket's COGs
 │   └── items_sample/        # ~200 sample STAC Item JSONs (spec inspection)
 ├── zarr/
-│   └── chm.zarr.icechunk    # VirtualiZarr GeoZarr (Icechunk), multiscales L1–L6,
-│                            #   zero-copy byte-range refs into Meta's COGs
+│   └── chm.zarr.icechunk    # multiscale GeoZarr (Icechunk, virtual), groups 1x (native 1.19 m) .. 64x;
+│                            #   zero-copy byte-range refs into this bucket's COGs
 ├── README.md
 └── LICENSE
 ```
 
 ## What each artifact is for
 
-| Artifact                 | Use it for                                                                                                                                                                                                              |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `tiles.parquet`          | Fast spatial lookup of which tile covers an AOI; drives maplibre/deck.gl tile loaders and DuckDB spatial queries. Replaces the original 56 MB `tiles.geojson`.                                                          |
-| `stac/`                  | Discovery + access via STAC tooling (pystac, stac-fastapi, TiTiler, odc-stac). Asset hrefs point at Meta's COGs (`s3://dataforgood-fb-data/...`).                                                                       |
-| `zarr/chm.zarr.icechunk` | `xarray`/`dask` analytics and Zarr-native multiscale visualization (Earthmover Arraylake, ZarrViz). Opens as a 6-level pyramid; reads translate to byte-range GETs against Meta's COGs — no pixels are duplicated here. |
+| Artifact                       | Use it for                                                                                                                                                                    |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `chm/`                         | The pixels — native ~1.19 m COGs, CORS + range-readable. Read directly via `/vsicurl`, rioxarray, rio-tiler, or an in-browser COG reader (geotiff.js).                        |
+| `overview/chm_overview_z8.tif` | One global COG covering z0–9 — fast continental/world views without touching 213k tiles.                                                                                      |
+| `tiles.parquet`                | Fast spatial lookup of which tile covers an AOI; drives maplibre/deck.gl tile loaders and DuckDB spatial queries. Replaces the original 56 MB `tiles.geojson`.                |
+| `stac/`                        | Discovery + access via STAC tooling (pystac, stac-fastapi, TiTiler, odc-stac). Asset hrefs point at this bucket's CORS COGs.                                                  |
+| `zarr/chm.zarr.icechunk`       | `xarray`/`dask` analytics + multiscale visualization (Arraylake). A 7-level pyramid, `1x` (native 1.19 m) … `64x` (~76 m); reads are byte-range GETs into this bucket's COGs. |
 
 ## CRS & grid
 
 - **EPSG:3857** (Web Mercator) — matches the source; zero reprojection for web maps.
 - 10-character Bing/Microsoft quadkey tile grid (zoom 10). Native pixel ≈ 1.19 m at the equator.
-- Pixel values are **canopy height in meters** (uint8, 0–255). `0` is both true-zero and
+- Pixel values are **canopy height in meters** (uint8, 0–254). `0` is both true-zero and
     no-data (the source sets no explicit nodata mask).
 
 ## Quickstart
@@ -42,8 +47,8 @@ s3://us-west-2.opendata.source.coop/tge-labs/meta-chm-v2/
 
 ```sql
 INSTALL spatial; LOAD spatial;
-SELECT quadkey, tile_size_bytes
-FROM 's3://us-west-2.opendata.source.coop/tge-labs/meta-chm-v2/tiles.parquet'
+SELECT quadkey, cog_url, tile_size_bytes
+FROM 'https://data.source.coop/tge-labs/meta-chm-v2/tiles.parquet'
 WHERE bbox_3857.minx < 1000000 AND bbox_3857.maxx > 0;  -- AOI filter
 ```
 
@@ -105,7 +110,7 @@ database required.
 import os, pystac, odc.stac
 from rustac import DuckdbClient
 
-os.environ.update(AWS_NO_SIGN_REQUEST="YES", AWS_REGION="us-east-1")  # Meta's COGs are anonymous
+os.environ.update(AWS_NO_SIGN_REQUEST="YES", AWS_REGION="us-west-2")  # this bucket's COGs are anonymous + CORS
 bbox = [13.30, 52.45, 13.45, 52.55]
 items = [pystac.Item.from_dict(d) for d in DuckdbClient().search(ITEMS_URL, bbox=bbox)]
 chm = odc.stac.load(items, bands=["chm"], bbox=bbox, resolution=10, chunks={"x": 2048, "y": 2048})
@@ -113,16 +118,19 @@ heights = chm["chm"].isel(time=0).compute()  # canopy height in meters
 ```
 
 See `examples/search_and_read.py` and `examples/odc_stac_load.py` in the
-[chm-zarr](https://github.com/isaaccorley/chm-zarr) repo.
+[chm-zarr](https://github.com/taylor-geospatial/meta-chm-v2) repo.
 
-### Virtual GeoZarr (xarray + Icechunk)
+### Multiscale GeoZarr (xarray + Icechunk)
+
+The GeoZarr is virtual — its chunks are byte-range references into the COGs in this same
+bucket, so it carries the full pyramid (`1x` native … `64x`) with no duplicated pixels.
 
 ```python
 import icechunk, xarray as xr
-prefix = "s3://dataforgood-fb-data/"
+prefix = "s3://us-west-2.opendata.source.coop/"
 cfg = icechunk.RepositoryConfig.default()
 cfg.set_virtual_chunk_container(
-    icechunk.VirtualChunkContainer(prefix, icechunk.s3_store(region="us-east-1", anonymous=True))
+    icechunk.VirtualChunkContainer(prefix, icechunk.s3_store(region="us-west-2", anonymous=True))
 )
 repo = icechunk.Repository.open(
     icechunk.s3_storage(
@@ -136,14 +144,17 @@ repo = icechunk.Repository.open(
     ),
 )
 dt = xr.open_datatree(repo.readonly_session("main").store, engine="zarr", consolidated=False)
-chm_l3 = dt["3"]["chm"]   # ~9.6 m/px level
+chm_native = dt["1x"]["chm"]   # native ~1.19 m  (use 8x ≈ 9.6 m, 64x ≈ 76 m for overviews)
 ```
+
+Also available as a managed Arraylake repo: `taylor-geospatial/meta-chm-v2`.
 
 ## Provenance & license
 
 CC-BY-4.0. Underlying data © Meta / Data for Good; repackaging by Taylor
 Geospatial Engine Labs. See `LICENSE`. Cite Tolan et al. (2024),
-https://arxiv.org/abs/2304.07213.
+https://arxiv.org/abs/2304.07213, and Brandt et al. (2026, CHMv2),
+https://arxiv.org/abs/2603.06382.
 
-The VirtualiZarr store contains only chunk references (offsets/lengths) into
-Meta's public COGs — if Meta's bucket moves, the Zarr reads break by design.
+The GeoZarr store holds only chunk references (offsets/lengths) into the COGs in **this**
+bucket (`chm/`), so it is self-contained — no dependency on Meta's bucket.

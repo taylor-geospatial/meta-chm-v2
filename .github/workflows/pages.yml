@@ -29,7 +29,8 @@ jobs:
         with:
           bun-version: latest
       - run: bun install --frozen-lockfile || bun install
-      - run: bun run bench
+      - run: bun run bench  # perf visibility only; never gates the deploy (shared runners are noisy)
+        continue-on-error: true
       - run: bun run build
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

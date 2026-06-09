@@ -38,7 +38,7 @@ quadkeys = pq.read_table("out/tiles.parquet", columns=["quadkey"])["quadkey"].to
 
 def check(level, factor, qks, want=3):
     """Cross-check virtual-zarr level vs rasterio overview at `factor` for `want` nonzero tiles."""
-    node = dt[str(level)]["chm"]
+    node = dt[f"{1 << level}x"]["chm"]  # groups named by downscale factor: 1x..64x
     px = 32768 // factor  # tile px at this level
     ok = 0
     for qk in qks:

@@ -39,7 +39,7 @@ qks = ["0013113332", "0013113333", "0013131013", "0013131031", "0013131033"]
 
 
 def check(level, factor):
-    node = dt[str(level)]["chm"]
+    node = dt[f"{1 << level}x"]["chm"]  # groups named by downscale factor: 1x..64x
     px = 32768 // factor
     ok = 0
     for qk in qks:

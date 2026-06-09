@@ -4,7 +4,7 @@ Output schema (one row per quadkey):
     quadkey: str (10-char)
     z, x, y: uint16
     tile_size_bytes: int64 (S3 ContentLength of chm/{qk}.tif)
-    cog_url: str (source S3 URL while we host nothing yet)
+    cog_url: str (https URL of the CORS-enabled COG mirror on source.coop)
     bbox_3857: struct(minx,miny,maxx,maxy: float64)
     geometry: Polygon in EPSG:4326 (for GeoParquet spatial filtering)
 """
@@ -20,7 +20,7 @@ import pyarrow as pa
 from shapely.geometry import box
 from tqdm.asyncio import tqdm_asyncio
 
-from . import SRC_BUCKET, SRC_PREFIX
+from . import DST_HTTPS_BASE, SRC_BUCKET, SRC_PREFIX
 from .quadkey import quadkey_to_tile, tile_to_lonlat_bbox, tile_to_mercator_bbox
 
 
@@ -79,7 +79,7 @@ def build(
     sizes = asyncio.run(_gather_sizes(quadkeys, head_concurrency))
 
     geoms = [box(*b) for b in bboxes_4326]
-    cog_urls = [f"s3://{SRC_BUCKET}/{SRC_PREFIX}/chm/{qk}.tif" for qk in quadkeys]
+    cog_urls = [f"{DST_HTTPS_BASE}/chm/{qk}.tif" for qk in quadkeys]
 
     bbox_3857_struct = pa.StructArray.from_arrays(
         [pa.array([b[i] for b in bboxes_3857], pa.float64()) for i in range(4)],

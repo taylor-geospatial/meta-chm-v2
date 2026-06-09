@@ -5,7 +5,7 @@ Outputs:
     out/stac/items.parquet        # canonical stac-geoparquet, one row per Item (213k rows)
     out/stac/items_sample/{qk[:4]}/{quadkey}.json   # ~200 sample JSON Items for inspection
 
-Asset hrefs reference Meta's S3 bucket directly (no mirror).
+Asset hrefs point at the source.coop CORS mirror of the COGs (self-contained).
 """
 
 import json
@@ -22,12 +22,14 @@ from pystac.extensions.raster import DataType, RasterBand, RasterExtension
 from shapely.geometry import mapping
 from tqdm import tqdm
 
-from . import DST_HTTPS_BASE, SRC_COG_PREFIX
+from . import DST_HTTPS_BASE
 
 # Catalog navigation links use the public HTTPS endpoint so HTTP clients can traverse.
 DST_STAC_BASE = f"{DST_HTTPS_BASE}/stac"
 DST_COLLECTION_URL = f"{DST_STAC_BASE}/collection.json"
 DST_ITEMS_PQ_URL = f"{DST_STAC_BASE}/items.parquet"
+DST_COG_HREF = f"{DST_HTTPS_BASE}/chm"  # CORS-enabled COG mirror on source.coop
+DST_ZARR_URL = f"{DST_HTTPS_BASE}/zarr/chm.zarr.icechunk"
 
 # Rows per parquet row group. Small enough that bbox-filtered reads prune most groups,
 # large enough to keep per-group overhead low. 213k items / 4000 ≈ 53 groups.
@@ -37,8 +39,9 @@ COLLECTION_ID = "dinov3-global-chm-v2-ml3"
 COLLECTION_TITLE = "Meta CHM v2 (DINOv3 global, ml3) — cloud-native companion"
 COLLECTION_DESCRIPTION = (
     "Per-tile STAC Items for Meta's global canopy height map v2 (DINOv3-based, model ml3). "
-    "Asset hrefs point at Meta's public S3 bucket; this package adds a GeoParquet tile index "
-    "and a VirtualiZarr GeoZarr view without remirroring the underlying ~24 TB of COGs."
+    "The ~24 TB of source COGs are mirrored on source.coop (CORS-enabled, EPSG:3857) and the "
+    "asset hrefs point there; the package also adds a GeoParquet tile index and a self-contained "
+    "multiscale GeoZarr (Icechunk virtual refs, native 1.19 m down to ~76 m)."
 )
 TEMPORAL_EXTENT = (
     datetime(2018, 1, 1, tzinfo=UTC),
@@ -81,6 +84,30 @@ def _build_collection(spatial_bbox: list[float], temporal: tuple) -> pystac.Coll
             target="https://arxiv.org/abs/2304.07213",
             title="Tolan et al., 2024",
         )
+    )
+    coll.add_link(
+        pystac.Link(
+            rel="cite-as",
+            target="https://arxiv.org/abs/2603.06382",
+            title="Brandt et al., 2026 (CHMv2)",
+        )
+    )
+    # Collection-level asset so the multiscale GeoZarr is discoverable from the catalog.
+    coll.add_asset(
+        "geozarr",
+        pystac.Asset(
+            href=DST_ZARR_URL,
+            media_type="application/vnd.zarr",
+            title="Multiscale GeoZarr (Icechunk, virtual)",
+            roles=["data", "overview"],
+            extra_fields={
+                "description": (
+                    "Self-contained Icechunk virtual GeoZarr; groups 1x (native 1.19 m) .. 64x. "
+                    "Open anonymously with icechunk + xarray, or via the Arraylake repo "
+                    "'taylor-geospatial/meta-chm-v2'."
+                )
+            },
+        ),
     )
     return coll
 
@@ -125,7 +152,7 @@ def _build_item(row: dict) -> pystac.Item:
     proj.transform = [px, 0.0, minx, 0.0, -px, maxy, 0.0, 0.0, 1.0]
 
     asset = pystac.Asset(
-        href=f"{SRC_COG_PREFIX}/{qk}.tif",
+        href=f"{DST_COG_HREF}/{qk}.tif",
         media_type=pystac.MediaType.COG,
         title="Canopy height (meters, uint8)",
         roles=["data"],

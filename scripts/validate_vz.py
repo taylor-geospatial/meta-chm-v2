@@ -33,8 +33,8 @@ session = repo.readonly_session("main")
 dt = xr.open_datatree(session.store, engine="zarr", consolidated=False)
 print("DataTree groups:", sorted(dt.children))
 
-node6 = dt["6"]["chm"]  # level 6 = 1 chunk (512x512) per source tile
-print("level 6 array:", node6.shape, node6.dtype)
+node6 = dt["64x"]["chm"]  # 64x (level 6) = 1 chunk (512x512) per source tile
+print("64x array:", node6.shape, node6.dtype)
 
 quadkeys = pq.read_table("out/tiles.parquet", columns=["quadkey"])["quadkey"].to_pylist()[:n_probe]
 

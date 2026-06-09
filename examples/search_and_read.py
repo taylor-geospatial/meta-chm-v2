@@ -1,8 +1,8 @@
 """Serverless STAC search over the published stac-geoparquet, then read a COG.
 
 No STAC API server required: rustac's DuckdbClient runs the search in-process directly
-against the remote `items.parquet`. Found Items carry `s3://` hrefs into Meta's public
-COGs, which rasterio reads anonymously.
+against the remote `items.parquet`. Found Items carry https hrefs into the source.coop
+CORS COG mirror, which rasterio reads anonymously over /vsicurl.
 
     uv run --group examples python examples/search_and_read.py
 """
@@ -26,9 +26,9 @@ def main() -> None:
     href = item["assets"]["chm"]["href"]
     print(f"reading {item['id']} -> {href}")
 
-    # COGs are anonymous in us-east-1; read a decimated overview (no full-res download).
+    # Public https COGs on source.coop (CORS + range); read a decimated overview, no full download.
     with (
-        rasterio.Env(AWS_NO_SIGN_REQUEST="YES", AWS_REGION="us-east-1"),
+        rasterio.Env(AWS_NO_SIGN_REQUEST="YES", AWS_REGION="us-west-2"),
         rasterio.open(href) as ds,
     ):
         arr = ds.read(1, out_shape=(1024, 1024), resampling=Resampling.average)

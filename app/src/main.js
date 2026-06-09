@@ -13,8 +13,6 @@ const { maplibregl, GeoTIFF } = window;
 const COG_HTTPS = "https://data.source.coop/tge-labs/meta-chm-v2/chm";
 const OVERVIEW_URL = "https://data.source.coop/tge-labs/meta-chm-v2/overview/chm_overview_z8.tif";
 const EOX_YEAR = 2024;
-const COG_BASE =
-  "https://dataforgood-fb-data.s3.amazonaws.com/forests/v2/global/dinov3_global_chm_v2_ml3/chm";
 const MAX_M = 60;
 const MIN_ANALYSIS_ZOOM = 11;
 const MAX_ANALYSIS_TILES = 64;
@@ -451,9 +449,9 @@ $("export").onclick = () => {
   }
   const lines = [
     "#!/usr/bin/env bash",
-    `# Meta CHM v2 ml3 — ${qks.length} source COGs intersecting the current view (anonymous).`,
+    `# Meta CHM v2 ml3 — ${qks.length} COGs intersecting the current view (source.coop, anonymous).`,
     "set -euo pipefail",
-    ...qks.map((qk) => `curl -O ${COG_BASE}/${qk}.tif`),
+    ...qks.map((qk) => `curl -O ${COG_HTTPS}/${qk}.tif`),
   ];
   const url = URL.createObjectURL(new Blob([lines.join("\n")], { type: "text/x-shellscript" }));
   const a = document.createElement("a");

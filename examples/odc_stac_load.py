@@ -2,7 +2,7 @@
 
 Searches the published stac-geoparquet (no server), then loads the matching COGs into a
 dask-backed xarray DataArray in native EPSG:3857 (no reprojection). Reads stream as
-byte-range requests against Meta's anonymous COGs.
+byte-range requests against the source.coop COGs (https, CORS + range).
 
     uv run --group examples python examples/odc_stac_load.py
 """
@@ -16,8 +16,8 @@ from rustac import DuckdbClient
 ITEMS = "https://data.source.coop/tge-labs/meta-chm-v2/stac/items.parquet"
 BBOX = [13.30, 52.45, 13.45, 52.55]  # small Berlin AOI
 
-# Meta's COGs are anonymous in us-east-1; let GDAL/rasterio read them unsigned.
-os.environ.update(AWS_NO_SIGN_REQUEST="YES", AWS_REGION="us-east-1")
+# Public https COGs on source.coop (CORS + range); GDAL/rasterio read them unsigned via /vsicurl.
+os.environ.update(AWS_NO_SIGN_REQUEST="YES", AWS_REGION="us-west-2")
 
 
 def main() -> None:
